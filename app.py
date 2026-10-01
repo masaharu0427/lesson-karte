@@ -133,7 +133,7 @@ def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, ta
     conn.commit()
     conn.close()
 
-def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, evaluation_note):
+def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -147,14 +147,18 @@ def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, 
             down_release = ?,
             target_goal = ?,
             lesson_practice = ?,
-            evaluation_note = ?
+            evaluation_note = ?,
+            video1 = ?,
+            video2 = ?,
+            images = ?
         WHERE id = ?
     ''', (
         str(lesson_date),
         scores["addr_posture"], scores["addr_align"],
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
-        target_goal, lesson_practice, evaluation_note, lesson_id
+        target_goal, lesson_practice, evaluation_note,
+        v1_path, v2_path, img_paths_str, lesson_id
     ))
     conn.commit()
     conn.close()
@@ -181,7 +185,7 @@ def get_student_history(student_id):
     conn.close()
     return rows
 
-# 1:青, 2:黄, 3:赤 のバッジHTMLを生成する関数（Noneや空欄はハイフン表示）
+# 1:青, 2:黄, 3:赤 のバッジHTMLを生成する関数（未選択はハイフン）
 def render_score_badge(score):
     if score is None or score == "":
         return '<span style="color:#aaa; font-size:16px;">-</span>'
@@ -275,19 +279,18 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
         st.warning(f"{selected_name} 様を削除しました。")
         st.rerun()
 
-# ヘッダー情報（選択された生徒のプロフィール確認用）
+# ヘッダー情報
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student['hdcp'] or '未設定'} ｜ **長期目標:** {curr_student['goal'] or '未設定'}")
 
 # メイン画面：タブ切り替え
 tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
 
 # ================================
-# タブ1: 新規入力フォーム（未入力のまま空白保存可能）
+# タブ1: 新規入力フォーム
 # ================================
 with tab_new:
     st.subheader(f"{selected_name} 様 - レッスンチェック新規入力")
     
-    # フォームリセット用トークン
     fk = st.session_state.form_reset_key
     
     lesson_date = st.date_input("レッスン受講日", value=date.today(), key=f"new_date_{fk}")
@@ -341,16 +344,13 @@ with tab_new:
 
     img_files = st.file_uploader("スイング静止画（最大5枚まで複数選択可）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
 
-    # 保存ボタン
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
-    # ボタン直下のメッセージ表示エリア
     if save_clicked:
         if img_files and len(img_files) > 5:
             st.error("❌ 保存に失敗しました: 画像は最大5枚までにしてください。")
         else:
             try:
-                # 動画保存
                 v1_path = ""
                 if v1_file:
                     v1_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{lesson_date}_v1_{v1_file.name}")
@@ -363,7 +363,6 @@ with tab_new:
                     with open(v2_path, "wb") as f:
                         f.write(v2_file.getbuffer())
 
-                # 画像保存
                 img_paths = []
                 if img_files:
                     for idx, img_f in enumerate(img_files[:5]):
@@ -372,7 +371,6 @@ with tab_new:
                             f.write(img_f.getbuffer())
                         img_paths.append(i_path)
 
-                # 未選択の項目は None のまま保存
                 scores = {
                     "addr_posture": addr_posture,
                     "addr_align": addr_align,
@@ -382,10 +380,8 @@ with tab_new:
                     "down_release": down_release,
                 }
                 
-                # データベース保存実行（未入力項目は空欄/Noneとして登録）
                 save_lesson(selected_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note)
                 
-                # 入力フォームを全項目クリアするためトークンを更新
                 st.session_state.form_reset_key += 1
                 st.session_state.refresh_key += 1
                 st.success("✅ 保存しました")
@@ -410,18 +406,16 @@ with tab_history:
             r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note = rec
             
             expander_title = f"📅 レッスン日: {r_date} (ID: {r_id})" + ("\u200b" * rf_k)
-            edit_expander_title = f"✏️ このレッスン記録の日付・内容を修正する" + ("\u200b" * rf_k)
+            edit_expander_title = f"✏️ このレッスン記録の日付・内容・メディアを修正する" + ("\u200b" * rf_k)
             
             # 各レッスンの枠：初期状態は閉じた状態（expanded=False）
             with st.expander(expander_title, expanded=False):
-                # 評価スコア一覧（未入力は - と表示）
                 st.markdown(f"""
                 | アドレス: 姿勢 | アドレス: 向き | バック: 軌道 | バック: トップ | ダウン: プレーン | ダウン: リリース |
                 | :---: | :---: | :---: | :---: | :---: | :---: |
                 | {render_score_badge(r_p)} | {render_score_badge(r_a)} | {render_score_badge(r_bp)} | {render_score_badge(r_bt)} | {render_score_badge(r_dp)} | {render_score_badge(r_dr)} |
                 """, unsafe_allow_html=True)
                 
-                # 3つの記録項目を表示（改行コードを保持して表示）
                 t_col1, t_col2 = st.columns(2)
                 with t_col1:
                     st.markdown("**📌 取り組んでいる課題・目標:**")
@@ -445,7 +439,7 @@ with tab_history:
                             st.caption("🎥 スイング動画 2")
                             st.video(r_v2)
                 
-                # 静止画ギャラリー（最大5枚並列表示）
+                # 静止画ギャラリー（最大5枚）
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
@@ -458,7 +452,7 @@ with tab_history:
                 st.markdown("---")
                 
                 # ------------------------------
-                # 編集・日付変更・削除エリア（初期状態：閉じた状態）
+                # 編集・日付変更・削除・メディア追加エリア
                 # ------------------------------
                 with st.expander(edit_expander_title, expanded=False):
                     try:
@@ -489,28 +483,67 @@ with tab_history:
                     
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
+                    st.markdown("---")
+                    st.markdown("**🎥 📷 メディアの追加・変更 (未選択の場合は現在のファイルが保持されます):**")
+                    ed_m1, ed_m2 = st.columns(2)
+                    with ed_m1:
+                        ed_v1_file = st.file_uploader(f"動画 1 を変更・追加 (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
+                    with ed_m2:
+                        ed_v2_file = st.file_uploader(f"動画 2 を変更・追加 (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
+                    
+                    current_img_count = len([p for p in (r_imgs or "").split(",") if p])
+                    ed_img_files = st.file_uploader(f"静止画を追加・差し替え (現在: {current_img_count}枚 / 最大5枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"ed_imgs_{r_id}_{rf_k}")
+
                     btn_c1, btn_c2 = st.columns([3, 1])
                     with btn_c1:
                         if st.button("💾 日付・修正内容を保存する", key=f"btn_update_{r_id}_{rf_k}", type="primary"):
-                            try:
-                                updated_scores = {
-                                    "addr_posture": e_p,
-                                    "addr_align": e_a,
-                                    "back_path": e_bp,
-                                    "back_top": e_bt,
-                                    "down_plane": e_dp,
-                                    "down_release": e_dr,
-                                }
-                                update_lesson(r_id, edit_date, updated_scores, edit_target_goal, edit_lesson_practice, edit_eval_note)
-                                
-                                st.session_state.refresh_key += 1
-                                st.toast("✅ レッスン内容を更新しました！")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ 更新に失敗しました: {e}")
+                            if ed_img_files and len(ed_img_files) > 5:
+                                st.error("❌ 画像は最大5枚までにしてください。")
+                            else:
+                                try:
+                                    # 動画1の処理（新ファイルがあれば保存、なければ既存維持）
+                                    new_v1_path = r_v1 or ""
+                                    if ed_v1_file:
+                                        new_v1_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v1_edit_{ed_v1_file.name}")
+                                        with open(new_v1_path, "wb") as f:
+                                            f.write(ed_v1_file.getbuffer())
+
+                                    # 動画2の処理
+                                    new_v2_path = r_v2 or ""
+                                    if ed_v2_file:
+                                        new_v2_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v2_edit_{ed_v2_file.name}")
+                                        with open(new_v2_path, "wb") as f:
+                                            f.write(ed_v2_file.getbuffer())
+
+                                    # 静止画の処理（新ファイルが指定されればそちらで更新、無ければ既存維持）
+                                    new_img_paths_str = r_imgs or ""
+                                    if ed_img_files:
+                                        new_imgs = []
+                                        for idx, img_f in enumerate(ed_img_files[:5]):
+                                            i_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_img{idx}_edit_{img_f.name}")
+                                            with open(i_path, "wb") as f:
+                                                f.write(img_f.getbuffer())
+                                            new_imgs.append(i_path)
+                                        new_img_paths_str = ",".join(new_imgs)
+
+                                    updated_scores = {
+                                        "addr_posture": e_p,
+                                        "addr_align": e_a,
+                                        "back_path": e_bp,
+                                        "back_top": e_bt,
+                                        "down_plane": e_dp,
+                                        "down_release": e_dr,
+                                    }
+                                    update_lesson(r_id, edit_date, updated_scores, edit_target_goal, edit_lesson_practice, edit_eval_note, new_v1_path, new_v2_path, new_img_paths_str)
+                                    
+                                    st.session_state.refresh_key += 1
+                                    st.toast("✅ レッスン内容を更新しました！")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ 更新に失敗しました: {e}")
                     with btn_c2:
                         confirm_delete = st.checkbox("削除確認", key=f"chk_del_{r_id}_{rf_k}")
-                        if st.button("🗑️️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
+                        if st.button("🗑️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
                             try:
                                 delete_lesson(r_id)
                                 st.session_state.refresh_key += 1
