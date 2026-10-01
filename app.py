@@ -48,6 +48,8 @@ def init_db():
             target_goal TEXT,
             lesson_practice TEXT,
             evaluation_note TEXT,
+            v1_url TEXT,
+            v2_url TEXT,
             FOREIGN KEY (student_id) REFERENCES students(id)
         )
     ''')
@@ -61,6 +63,10 @@ def init_db():
         c.execute("ALTER TABLE lessons ADD COLUMN lesson_practice TEXT")
     if "evaluation_note" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN evaluation_note TEXT")
+    if "v1_url" not in existing_cols:
+        c.execute("ALTER TABLE lessons ADD COLUMN v1_url TEXT")
+    if "v2_url" not in existing_cols:
+        c.execute("ALTER TABLE lessons ADD COLUMN v2_url TEXT")
 
     conn.commit()
     conn.close()
@@ -110,7 +116,7 @@ def delete_student(student_id):
     conn.commit()
     conn.close()
 
-def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note):
+def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -120,20 +126,22 @@ def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, ta
             back_path, back_top, 
             down_plane, down_release, 
             video1, video2, images, 
-            target_goal, lesson_practice, evaluation_note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            target_goal, lesson_practice, evaluation_note,
+            v1_url, v2_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         student_id, str(lesson_date),
         scores["addr_posture"], scores["addr_align"],
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
         v1_path, v2_path, ",".join(img_paths), 
-        target_goal, lesson_practice, evaluation_note
+        target_goal, lesson_practice, evaluation_note,
+        v1_url, v2_url
     ))
     conn.commit()
     conn.close()
 
-def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str):
+def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -150,7 +158,9 @@ def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, 
             evaluation_note = ?,
             video1 = ?,
             video2 = ?,
-            images = ?
+            images = ?,
+            v1_url = ?,
+            v2_url = ?
         WHERE id = ?
     ''', (
         str(lesson_date),
@@ -158,7 +168,8 @@ def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, 
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
         target_goal, lesson_practice, evaluation_note,
-        v1_path, v2_path, img_paths_str, lesson_id
+        v1_path, v2_path, img_paths_str,
+        v1_url, v2_url, lesson_id
     ))
     conn.commit()
     conn.close()
@@ -176,7 +187,8 @@ def get_student_history(student_id):
     c.execute('''
         SELECT id, lesson_date, addr_posture, addr_align, back_path, back_top, 
                down_plane, down_release, video1, video2, images, 
-               target_goal, lesson_practice, evaluation_note
+               target_goal, lesson_practice, evaluation_note,
+               v1_url, v2_url
         FROM lessons 
         WHERE student_id = ? 
         ORDER BY lesson_date DESC, id DESC
@@ -190,13 +202,13 @@ def render_score_badge(score):
     if score is None or score == "":
         return '<span style="color:#aaa; font-size:16px;">-</span>'
     if score == 1:
-        color = "#0066cc" # 青
+        color = "#0066cc"
         bg = "#e6f0fa"
     elif score == 2:
-        color = "#d9822b" # 黄/オレンジ
+        color = "#d9822b"
         bg = "#fdf6e2"
     elif score == 3:
-        color = "#cc0000" # 赤
+        color = "#cc0000"
         bg = "#fae6e6"
     else:
         return '<span style="color:#aaa; font-size:16px;">-</span>'
@@ -210,7 +222,7 @@ def render_text_box(content, box_type="blue"):
     if box_type == "blue":
         bg_color = "#f0f7ff"
         border_color = "#0066cc"
-    else:  # green（評価用）
+    else:
         bg_color = "#f0fdf4"
         border_color = "#16a34a"
         
@@ -234,7 +246,6 @@ st.title("⛳ ゴルフレッスン スイングチェックカルテ")
 st.sidebar.header("生徒管理")
 raw_students = get_students()
 
-# 新規生徒登録エリア
 with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
     new_s_name = st.text_input("生徒名", key="new_s_name")
     new_s_hdcp = st.text_input("現在のハンデ/平均スコア", key="new_s_hdcp")
@@ -249,14 +260,12 @@ if not raw_students:
     st.info("サイドバーから生徒を登録してください。")
     st.stop()
 
-# 生徒情報辞書の作成
 student_dict = {s[1]: {"id": s[0], "hdcp": s[2], "goal": s[3]} for s in raw_students}
 selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_dict.keys()))
 
 curr_student = student_dict[selected_name]
 selected_id = curr_student["id"]
 
-# 生徒プロフィール編集エリア（サイドバー）
 with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expanded=False):
     edit_s_name = st.text_input("氏名", value=selected_name, key=f"s_name_{selected_id}")
     edit_s_hdcp = st.text_input("ハンデ / 平均スコア", value=curr_student["hdcp"] or "", key=f"s_hdcp_{selected_id}")
@@ -279,10 +288,8 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
         st.warning(f"{selected_name} 様を削除しました。")
         st.rerun()
 
-# ヘッダー情報
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student['hdcp'] or '未設定'} ｜ **長期目標:** {curr_student['goal'] or '未設定'}")
 
-# メイン画面：タブ切り替え
 tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
 
 # ================================
@@ -292,7 +299,6 @@ with tab_new:
     st.subheader(f"{selected_name} 様 - レッスンチェック新規入力")
     
     fk = st.session_state.form_reset_key
-    
     lesson_date = st.date_input("レッスン受講日", value=date.today(), key=f"new_date_{fk}")
     
     st.markdown("### ■ スイング3段階チェック (1: 青 / 2: 黄 / 3: 赤)")
@@ -334,15 +340,25 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（動画2点・画像最大5点）")
+    st.markdown("### ■ メディア登録（Googleフォト共有リンク または 直接ファイル）")
     
+    # Googleフォト リンク入力枠
+    st.markdown("##### 🔗 Googleフォト 共有リンク（推奨: 容量無制限・高速）")
+    u_col1, u_col2 = st.columns(2)
+    with u_col1:
+        v1_url = st.text_input("動画 1 のGoogleフォトリンク (例: https://photos.app.goo.gl/...)", value="", key=f"new_v1_url_{fk}")
+    with u_col2:
+        v2_url = st.text_input("動画 2 のGoogleフォトリンク (例: https://photos.app.goo.gl/...)", value="", key=f"new_v2_url_{fk}")
+
+    st.markdown("##### 📁 または動画ファイルを直接アップロード（mp4 / mov）")
     m_col1, m_col2 = st.columns(2)
     with m_col1:
         v1_file = st.file_uploader("スイング動画 1（後方など）", type=["mp4", "mov"], key=f"v1_{fk}")
     with m_col2:
         v2_file = st.file_uploader("スイング動画 2（正面など）", type=["mp4", "mov"], key=f"v2_{fk}")
 
-    img_files = st.file_uploader("スイング静止画（最大5枚まで複数選択可）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
+    st.markdown("##### 📷 スイング静止画（最大5枚まで）")
+    img_files = st.file_uploader("静止画（jpg, png）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
 
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
@@ -380,7 +396,7 @@ with tab_new:
                     "down_release": down_release,
                 }
                 
-                save_lesson(selected_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note)
+                save_lesson(selected_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url.strip(), v2_url.strip())
                 
                 st.session_state.form_reset_key += 1
                 st.session_state.refresh_key += 1
@@ -403,12 +419,11 @@ with tab_history:
         st.info("まだ保存されたレッスン記録がありません。")
     else:
         for rec in records:
-            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note = rec
+            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url = rec
             
             expander_title = f"📅 レッスン日: {r_date} (ID: {r_id})" + ("\u200b" * rf_k)
             edit_expander_title = f"✏️ このレッスン記録の日付・内容・メディアを修正する" + ("\u200b" * rf_k)
             
-            # 各レッスンの枠：初期状態は閉じた状態（expanded=False）
             with st.expander(expander_title, expanded=False):
                 st.markdown(f"""
                 | アドレス: 姿勢 | アドレス: 向き | バック: 軌道 | バック: トップ | ダウン: プレーン | ダウン: リリース |
@@ -427,8 +442,19 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # スイング動画の再生
-                if r_v1 or r_v2:
+                # Googleフォト リンクボタン表示
+                if r_v1_url or r_v2_url:
+                    st.markdown("##### 🔗 Googleフォト クラウド動画")
+                    link_col1, link_col2 = st.columns(2)
+                    with link_col1:
+                        if r_v1_url:
+                            st.link_button("▶️ Googleフォトで動画1を再生", r_v1_url, use_container_width=True)
+                    with link_col2:
+                        if r_v2_url:
+                            st.link_button("▶️ Googleフォトで動画2を再生", r_v2_url, use_container_width=True)
+
+                # アップロード動画の再生
+                if (r_v1 and os.path.exists(r_v1)) or (r_v2 and os.path.exists(r_v2)):
                     v_col1, v_col2 = st.columns(2)
                     with v_col1:
                         if r_v1 and os.path.exists(r_v1):
@@ -451,9 +477,7 @@ with tab_history:
 
                 st.markdown("---")
                 
-                # ------------------------------
                 # 編集・日付変更・削除・メディア追加エリア
-                # ------------------------------
                 with st.expander(edit_expander_title, expanded=False):
                     try:
                         parsed_date = datetime.strptime(r_date, "%Y-%m-%d").date()
@@ -484,12 +508,19 @@ with tab_history:
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
-                    st.markdown("**🎥 📷 メディアの追加・変更 (未選択の場合は現在のファイルが保持されます):**")
+                    st.markdown("**🔗 Googleフォト共有リンクの変更・追加:**")
+                    ed_u1, ed_u2 = st.columns(2)
+                    with ed_u1:
+                        edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
+                    with ed_u2:
+                        edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url or "", key=f"ed_v2_url_{r_id}_{rf_k}")
+
+                    st.markdown("**📁 直接動画ファイルの追加・変更 (未選択時は維持):**")
                     ed_m1, ed_m2 = st.columns(2)
                     with ed_m1:
-                        ed_v1_file = st.file_uploader(f"動画 1 を変更・追加 (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
+                        ed_v1_file = st.file_uploader(f"動画 1 ファイル (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
                     with ed_m2:
-                        ed_v2_file = st.file_uploader(f"動画 2 を変更・追加 (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
+                        ed_v2_file = st.file_uploader(f"動画 2 ファイル (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
                     
                     current_img_count = len([p for p in (r_imgs or "").split(",") if p])
                     ed_img_files = st.file_uploader(f"静止画を追加・差し替え (現在: {current_img_count}枚 / 最大5枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"ed_imgs_{r_id}_{rf_k}")
@@ -501,21 +532,18 @@ with tab_history:
                                 st.error("❌ 画像は最大5枚までにしてください。")
                             else:
                                 try:
-                                    # 動画1の処理（新ファイルがあれば保存、なければ既存維持）
                                     new_v1_path = r_v1 or ""
                                     if ed_v1_file:
                                         new_v1_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v1_edit_{ed_v1_file.name}")
                                         with open(new_v1_path, "wb") as f:
                                             f.write(ed_v1_file.getbuffer())
 
-                                    # 動画2の処理
                                     new_v2_path = r_v2 or ""
                                     if ed_v2_file:
                                         new_v2_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v2_edit_{ed_v2_file.name}")
                                         with open(new_v2_path, "wb") as f:
                                             f.write(ed_v2_file.getbuffer())
 
-                                    # 静止画の処理（新ファイルが指定されればそちらで更新、無ければ既存維持）
                                     new_img_paths_str = r_imgs or ""
                                     if ed_img_files:
                                         new_imgs = []
@@ -534,7 +562,12 @@ with tab_history:
                                         "down_plane": e_dp,
                                         "down_release": e_dr,
                                     }
-                                    update_lesson(r_id, edit_date, updated_scores, edit_target_goal, edit_lesson_practice, edit_eval_note, new_v1_path, new_v2_path, new_img_paths_str)
+                                    update_lesson(
+                                        r_id, edit_date, updated_scores, 
+                                        edit_target_goal, edit_lesson_practice, edit_eval_note, 
+                                        new_v1_path, new_v2_path, new_img_paths_str,
+                                        edit_v1_url.strip(), edit_v2_url.strip()
+                                    )
                                     
                                     st.session_state.refresh_key += 1
                                     st.toast("✅ レッスン内容を更新しました！")
