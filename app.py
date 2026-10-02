@@ -30,26 +30,46 @@ def extract_drive_id(url):
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
-# Googleドライブの画像を安全にローカルキャッシュしてパスを返す関数
+# Googleドライブの画像を安全に取得する関数（破損ファイル・HTMLエラーを完全ガード）
 def get_drive_image_path(url):
     file_id = extract_drive_id(url)
     if not file_id:
         return None
     cached_path = os.path.join(DRIVE_CACHE_DIR, f"{file_id}.jpg")
-    if os.path.exists(cached_path):
-        return cached_path
     
+    # 既存キャッシュが有効な画像かチェック（壊れていれば削除）
+    if os.path.exists(cached_path):
+        try:
+            with Image.open(cached_path) as test_img:
+                test_img.verify()
+            return cached_path
+        except Exception:
+            try:
+                os.remove(cached_path)
+            except Exception:
+                pass
+
     # ダウンロード試行
-    download_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
     try:
-        req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(
+            download_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
         with urllib.request.urlopen(req, timeout=5) as response:
             data = response.read()
-            # HTML（アクセス拒否等）ではなく画像バイト列であることを簡易チェック
-            if len(data) > 1000 and not data.startswith(b"<!DOCTYPE"):
+            # HTMLテキストが返ってきた場合は保存しない
+            if len(data) > 1000 and not data.strip().startswith(b"<"):
                 with open(cached_path, "wb") as f:
                     f.write(data)
-                return cached_path
+                # PILで開けるか即座に検証
+                try:
+                    with Image.open(cached_path) as test_img:
+                        test_img.verify()
+                    return cached_path
+                except Exception:
+                    if os.path.exists(cached_path):
+                        os.remove(cached_path)
     except Exception:
         pass
     return None
@@ -586,7 +606,7 @@ with tab_history:
                             st.caption("🎥 スイング動画 2")
                             st.video(r_v2)
                 
-                # Googleドライブ静止画の表示
+                # Googleドライブ静止画の表示（安全ガード付き）
                 if r_drive_imgs:
                     drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
                     if drive_raw_list:
@@ -595,14 +615,25 @@ with tab_history:
                         for idx, d_url in enumerate(drive_raw_list):
                             with d_cols[idx]:
                                 local_p = get_drive_image_path(d_url)
+                                image_shown = False
                                 if local_p and os.path.exists(local_p):
-                                    img = Image.open(local_p)
-                                    st.image(img, use_container_width=True, caption=f"静止画 {idx+1}")
-                                else:
+                                    try:
+                                        img = Image.open(local_p)
+                                        st.image(img, use_container_width=True, caption=f"静止画 {idx+1}")
+                                        image_shown = True
+                                    except Exception:
+                                        # 開けない不正ファイルは安全に破棄
+                                        try:
+                                            os.remove(local_p)
+                                        except Exception:
+                                            pass
+                                
+                                if not image_shown:
                                     st.info(f"静止画 {idx+1}")
-                                st.link_button("🔍 ドライブで拡大表示", d_url, use_container_width=True)
+                                
+                                st.link_button("🔍 ドライブで確認", d_url, use_container_width=True)
 
-                # アップロード静止画の表示
+                # アップロード静止画の表示（安全ガード付き）
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
@@ -610,8 +641,11 @@ with tab_history:
                         img_cols = st.columns(min(len(img_list), 5))
                         for idx, img_p in enumerate(img_list):
                             with img_cols[idx]:
-                                img = Image.open(img_p)
-                                st.image(img, use_container_width=True, caption=f"画像 {idx+1}")
+                                try:
+                                    img = Image.open(img_p)
+                                    st.image(img, use_container_width=True, caption=f"画像 {idx+1}")
+                                except Exception:
+                                    st.caption(f"画像 {idx+1} (読み込み不可)")
 
                 st.markdown("---")
                 
