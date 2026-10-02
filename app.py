@@ -21,6 +21,7 @@ if "form_reset_key" not in st.session_state:
 def init_db():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
+    
     # 生徒テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS students (
@@ -30,6 +31,15 @@ def init_db():
             goal TEXT
         )
     ''')
+    
+    # コーチテーブル
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS coaches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE
+        )
+    ''')
+    
     # レッスン記録テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS lessons (
@@ -50,6 +60,7 @@ def init_db():
             evaluation_note TEXT,
             v1_url TEXT,
             v2_url TEXT,
+            coach_name TEXT,
             FOREIGN KEY (student_id) REFERENCES students(id)
         )
     ''')
@@ -67,13 +78,15 @@ def init_db():
         c.execute("ALTER TABLE lessons ADD COLUMN v1_url TEXT")
     if "v2_url" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN v2_url TEXT")
+    if "coach_name" not in existing_cols:
+        c.execute("ALTER TABLE lessons ADD COLUMN coach_name TEXT")
 
     conn.commit()
     conn.close()
 
 init_db()
 
-# DB操作関数
+# DB操作関数：生徒
 def get_students():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -116,21 +129,50 @@ def delete_student(student_id):
     conn.commit()
     conn.close()
 
-def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url=""):
+# DB操作関数：コーチ
+def get_coaches():
+    conn = sqlite3.connect("golf_lesson.db")
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM coaches ORDER BY name")
+    data = c.fetchall()
+    conn.close()
+    return data
+
+def add_coach(name):
+    conn = sqlite3.connect("golf_lesson.db")
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO coaches (name) VALUES (?)", (name,))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False
+    conn.close()
+    return success
+
+def delete_coach(coach_id):
+    conn = sqlite3.connect("golf_lesson.db")
+    c = conn.cursor()
+    c.execute("DELETE FROM coaches WHERE id = ?", (coach_id,))
+    conn.commit()
+    conn.close()
+
+# DB操作関数：レッスン記録
+def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
         INSERT INTO lessons (
-            student_id, lesson_date, 
+            student_id, lesson_date, coach_name,
             addr_posture, addr_align, 
             back_path, back_top, 
             down_plane, down_release, 
             video1, video2, images, 
             target_goal, lesson_practice, evaluation_note,
             v1_url, v2_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        student_id, str(lesson_date),
+        student_id, str(lesson_date), coach_name,
         scores["addr_posture"], scores["addr_align"],
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
@@ -141,12 +183,13 @@ def save_lesson(student_id, lesson_date, scores, v1_path, v2_path, img_paths, ta
     conn.commit()
     conn.close()
 
-def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url=""):
+def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
         UPDATE lessons 
         SET lesson_date = ?,
+            coach_name = ?,
             addr_posture = ?,
             addr_align = ?,
             back_path = ?,
@@ -163,7 +206,7 @@ def update_lesson(lesson_id, lesson_date, scores, target_goal, lesson_practice, 
             v2_url = ?
         WHERE id = ?
     ''', (
-        str(lesson_date),
+        str(lesson_date), coach_name,
         scores["addr_posture"], scores["addr_align"],
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
@@ -188,7 +231,7 @@ def get_student_history(student_id):
         SELECT id, lesson_date, addr_posture, addr_align, back_path, back_top, 
                down_plane, down_release, video1, video2, images, 
                target_goal, lesson_practice, evaluation_note,
-               v1_url, v2_url
+               v1_url, v2_url, coach_name
         FROM lessons 
         WHERE student_id = ? 
         ORDER BY lesson_date DESC, id DESC
@@ -214,7 +257,7 @@ def render_score_badge(score):
         return '<span style="color:#aaa; font-size:16px;">-</span>'
     return f'<span style="background-color:{bg}; color:{color}; font-weight:bold; font-size:18px; padding:3px 12px; border-radius:6px; border:1px solid {color};">{score}</span>'
 
-# 改行を崩さず綺麗に表示するためのHTML装飾ボックス
+# 改行を保持して表示するHTMLボックス
 def render_text_box(content, box_type="blue"):
     if not content or not content.strip():
         return '<div style="color: #888; font-style: italic; padding: 8px;">（未記入）</div>'
@@ -242,7 +285,7 @@ def render_text_box(content, box_type="blue"):
 # --- 画面構成 ---
 st.title("⛳ ゴルフレッスン スイングチェックカルテ")
 
-# サイドバー：生徒管理と選択
+# サイドバー：生徒管理 & コーチ管理
 st.sidebar.header("生徒管理")
 raw_students = get_students()
 
@@ -251,8 +294,8 @@ with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
     new_s_hdcp = st.text_input("現在のハンデ/平均スコア", key="new_s_hdcp")
     new_s_goal = st.text_input("長期目標", key="new_s_goal")
     if st.button("登録する", key="btn_add_student"):
-        if new_s_name:
-            add_student(new_s_name, new_s_hdcp, new_s_goal)
+        if new_s_name.strip():
+            add_student(new_s_name.strip(), new_s_hdcp.strip(), new_s_goal.strip())
             st.success(f"{new_s_name} 様を登録しました")
             st.rerun()
 
@@ -272,8 +315,8 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
     edit_s_goal = st.text_input("長期目標", value=curr_student["goal"] or "", key=f"s_goal_{selected_id}")
     
     if st.button("💾 プロフィールを更新", type="primary", key=f"btn_up_s_{selected_id}"):
-        if edit_s_name:
-            if update_student(selected_id, edit_s_name, edit_s_hdcp, edit_s_goal):
+        if edit_s_name.strip():
+            if update_student(selected_id, edit_s_name.strip(), edit_s_hdcp.strip(), edit_s_goal.strip()):
                 st.session_state.refresh_key += 1
                 st.toast("✅ プロフィールを更新しました！")
                 st.rerun()
@@ -288,8 +331,36 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
         st.warning(f"{selected_name} 様を削除しました。")
         st.rerun()
 
+# サイドバー：コーチ管理
+st.sidebar.markdown("---")
+st.sidebar.header("コーチ管理")
+raw_coaches = get_coaches()
+coach_list = [c[1] for c in raw_coaches]
+
+with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expanded=False):
+    new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
+    if st.button("＋ コーチを登録", key="btn_add_coach"):
+        if new_coach_name.strip():
+            if add_coach(new_coach_name.strip()):
+                st.success(f"{new_coach_name} を登録しました")
+                st.rerun()
+            else:
+                st.error("同じ名前のコーチが既に登録されています。")
+    
+    if raw_coaches:
+        st.markdown("---")
+        st.caption("登録済みコーチの削除:")
+        coach_to_del = st.selectbox("削除するコーチを選択", options=[c[1] for c in raw_coaches], key="coach_to_del_select")
+        del_coach_id = [c[0] for c in raw_coaches if c[1] == coach_to_del][0]
+        if st.button(f"🗑️ {coach_to_del} を削除", key="btn_del_coach"):
+            delete_coach(del_coach_id)
+            st.warning(f"{coach_to_del} を削除しました。")
+            st.rerun()
+
+# ヘッダー情報
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student['hdcp'] or '未設定'} ｜ **長期目標:** {curr_student['goal'] or '未設定'}")
 
+# メイン画面：タブ切り替え
 tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
 
 # ================================
@@ -299,8 +370,15 @@ with tab_new:
     st.subheader(f"{selected_name} 様 - レッスンチェック新規入力")
     
     fk = st.session_state.form_reset_key
-    lesson_date = st.date_input("レッスン受講日", value=date.today(), key=f"new_date_{fk}")
     
+    top_col1, top_col2 = st.columns(2)
+    with top_col1:
+        lesson_date = st.date_input("📅 レッスン受講日", value=date.today(), key=f"new_date_{fk}")
+    with top_col2:
+        coach_options = ["（未選択）"] + coach_list
+        selected_coach_new = st.selectbox("🏌️‍♂️️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
+        new_coach_val = "" if selected_coach_new == "（未選択）" else selected_coach_new
+
     st.markdown("### ■ スイング3段階チェック (1: 青 / 2: 黄 / 3: 赤)")
     col1, col2, col3 = st.columns(3)
     
@@ -342,7 +420,6 @@ with tab_new:
     st.markdown("---")
     st.markdown("### ■ メディア登録（Googleフォト共有リンク または 直接ファイル）")
     
-    # Googleフォト リンク入力枠
     st.markdown("##### 🔗 Googleフォト 共有リンク（推奨: 容量無制限・高速）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
@@ -396,7 +473,12 @@ with tab_new:
                     "down_release": down_release,
                 }
                 
-                save_lesson(selected_id, lesson_date, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url.strip(), v2_url.strip())
+                save_lesson(
+                    selected_id, lesson_date, new_coach_val, scores,
+                    v1_path, v2_path, img_paths,
+                    target_goal, lesson_practice, evaluation_note,
+                    v1_url.strip(), v2_url.strip()
+                )
                 
                 st.session_state.form_reset_key += 1
                 st.session_state.refresh_key += 1
@@ -419,12 +501,19 @@ with tab_history:
         st.info("まだ保存されたレッスン記録がありません。")
     else:
         for rec in records:
-            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url = rec
+            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url, r_coach_name = rec
             
-            expander_title = f"📅 レッスン日: {r_date} (ID: {r_id})" + ("\u200b" * rf_k)
-            edit_expander_title = f"✏️ このレッスン記録の日付・内容・メディアを修正する" + ("\u200b" * rf_k)
+            coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
+            expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
+            edit_expander_title = f"✏️ このレッスン記録の日付・コーチ・内容・メディアを修正する" + ("\u200b" * rf_k)
             
             with st.expander(expander_title, expanded=False):
+                # 担当コーチ表記カード
+                if r_coach_name:
+                    st.markdown(f'<div style="background-color:#eef2ff; border-left:4px solid #4f46e5; padding:8px 12px; border-radius:4px; font-weight:bold; color:#312e81; margin-bottom:12px;">🏌️‍♂️ 担当コーチ: {r_coach_name}</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="color:#888; font-size:13px; margin-bottom:8px;">🏌️‍♂️ 担当コーチ: （未指定）</div>', unsafe_allow_html=True)
+
                 st.markdown(f"""
                 | アドレス: 姿勢 | アドレス: 向き | バック: 軌道 | バック: トップ | ダウン: プレーン | ダウン: リリース |
                 | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -477,14 +566,22 @@ with tab_history:
 
                 st.markdown("---")
                 
-                # 編集・日付変更・削除・メディア追加エリア
+                # 編集・日付変更・コーチ変更・削除・メディア追加エリア
                 with st.expander(edit_expander_title, expanded=False):
                     try:
                         parsed_date = datetime.strptime(r_date, "%Y-%m-%d").date()
                     except ValueError:
                         parsed_date = date.today()
                     
-                    edit_date = st.date_input("📅 レッスン受講日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
+                    e_top_c1, e_top_c2 = st.columns(2)
+                    with e_top_c1:
+                        edit_date = st.date_input("📅 レッスン受講日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
+                    with e_top_c2:
+                        edit_coach_options = ["（未選択）"] + coach_list
+                        # 既存のコーチがリストにある場合はそれを選択、なければ（未選択）
+                        default_coach_idx = edit_coach_options.index(r_coach_name) if r_coach_name in edit_coach_options else 0
+                        chosen_coach_edit = st.selectbox("🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
+                        edit_coach_val = "" if chosen_coach_edit == "（未選択）" else chosen_coach_edit
                     
                     st.markdown("**評価スコアの修正:**")
                     ec1, ec2, ec3 = st.columns(3)
@@ -563,7 +660,7 @@ with tab_history:
                                         "down_release": e_dr,
                                     }
                                     update_lesson(
-                                        r_id, edit_date, updated_scores, 
+                                        r_id, edit_date, edit_coach_val, updated_scores, 
                                         edit_target_goal, edit_lesson_practice, edit_eval_note, 
                                         new_v1_path, new_v2_path, new_img_paths_str,
                                         edit_v1_url.strip(), edit_v2_url.strip()
