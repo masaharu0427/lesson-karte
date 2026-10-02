@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import os
 import re
+import urllib.request
 from datetime import datetime, date
 from PIL import Image
 
@@ -10,7 +11,9 @@ st.set_page_config(page_title="ゴルフ スイングチェックカルテ", lay
 
 # 保存先フォルダの作成
 UPLOAD_DIR = "uploaded_media"
+DRIVE_CACHE_DIR = "drive_cache"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(DRIVE_CACHE_DIR, exist_ok=True)
 
 # 画面リセット用のセッション管理
 if "refresh_key" not in st.session_state:
@@ -18,26 +21,44 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# Googleドライブの共有リンクから直接表示用URLへ変換するヘルパー関数
-def convert_drive_url_to_direct(url):
-    if not url or "drive.google.com" not in url:
-        return url
-    # ファイルIDの正規表現抽出
+# GoogleドライブのURLからファイルIDを抽出する関数
+def extract_drive_id(url):
+    if not url:
+        return None
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
     if not match:
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
-    if match:
-        file_id = match.group(1)
-        # Google UserContent 形式の直接画像リンク
-        return f"https://lh3.googleusercontent.com/d/{file_id}"
-    return url
+    return match.group(1) if match else None
+
+# Googleドライブの画像を安全にローカルキャッシュしてパスを返す関数
+def get_drive_image_path(url):
+    file_id = extract_drive_id(url)
+    if not file_id:
+        return None
+    cached_path = os.path.join(DRIVE_CACHE_DIR, f"{file_id}.jpg")
+    if os.path.exists(cached_path):
+        return cached_path
+    
+    # ダウンロード試行
+    download_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    try:
+        req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = response.read()
+            # HTML（アクセス拒否等）ではなく画像バイト列であることを簡易チェック
+            if len(data) > 1000 and not data.startswith(b"<!DOCTYPE"):
+                with open(cached_path, "wb") as f:
+                    f.write(data)
+                return cached_path
+    except Exception:
+        pass
+    return None
 
 # データベース初期化・マイグレーション
 def init_db():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     
-    # 生徒テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +68,6 @@ def init_db():
         )
     ''')
     
-    # コーチテーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS coaches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +75,6 @@ def init_db():
         )
     ''')
     
-    # レッスン記録テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS lessons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +100,6 @@ def init_db():
         )
     ''')
     
-    # 既存DBへの新カラム追加対応（自動移行）
     c.execute("PRAGMA table_info(lessons)")
     existing_cols = [col[1] for col in c.fetchall()]
     if "target_goal" not in existing_cols:
@@ -104,7 +122,6 @@ def init_db():
 
 init_db()
 
-# DB操作関数：生徒
 def get_students():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -127,11 +144,7 @@ def update_student(student_id, name, handicap, goal):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     try:
-        c.execute('''
-            UPDATE students 
-            SET name = ?, handicap = ?, goal = ? 
-            WHERE id = ?
-        ''', (name, handicap, goal, student_id))
+        c.execute('UPDATE students SET name = ?, handicap = ?, goal = ? WHERE id = ?', (name, handicap, goal, student_id))
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
@@ -147,7 +160,6 @@ def delete_student(student_id):
     conn.commit()
     conn.close()
 
-# DB操作関数：コーチ
 def get_coaches():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -175,7 +187,6 @@ def delete_coach(coach_id):
     conn.commit()
     conn.close()
 
-# DB操作関数：レッスン記録
 def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -259,7 +270,6 @@ def get_student_history(student_id):
     conn.close()
     return rows
 
-# 1:青, 2:黄, 3:赤 のバッジHTMLを生成する関数
 def render_score_badge(score):
     if score is None or score == "":
         return '<span style="color:#aaa; font-size:16px;">-</span>'
@@ -276,7 +286,6 @@ def render_score_badge(score):
         return '<span style="color:#aaa; font-size:16px;">-</span>'
     return f'<span style="background-color:{bg}; color:{color}; font-weight:bold; font-size:18px; padding:3px 12px; border-radius:6px; border:1px solid {color};">{score}</span>'
 
-# 改行を保持して表示するHTMLボックス
 def render_text_box(content, box_type="blue"):
     if not content or not content.strip():
         return '<div style="color: #888; font-style: italic; padding: 8px;">（未記入）</div>'
@@ -304,7 +313,7 @@ def render_text_box(content, box_type="blue"):
 # --- 画面構成 ---
 st.title("⛳ ゴルフレッスン スイングチェックカルテ")
 
-# サイドバー：生徒管理 & コーチ管理
+# サイドバー
 st.sidebar.header("生徒管理")
 raw_students = get_students()
 
@@ -350,7 +359,6 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
         st.warning(f"{selected_name} 様を削除しました。")
         st.rerun()
 
-# サイドバー：コーチ管理
 st.sidebar.markdown("---")
 st.sidebar.header("コーチ管理")
 raw_coaches = get_coaches()
@@ -435,39 +443,36 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（動画・静止画）")
+    st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
     
-    # Googleフォト動画
-    st.markdown("##### 🔗 Googleフォト 動画共有リンク")
+    st.markdown("##### 📁 Googleドライブ 動画共有リンク")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("動画 1 のGoogleフォトリンク", value="", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/...)", value="", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("動画 2 のGoogleフォトリンク", value="", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/...)", value="", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📁 または動画ファイルを直接アップロード（mp4 / mov）")
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        v1_file = st.file_uploader("スイング動画 1（後方など）", type=["mp4", "mov"], key=f"v1_{fk}")
-    with m_col2:
-        v2_file = st.file_uploader("スイング動画 2（正面など）", type=["mp4", "mov"], key=f"v2_{fk}")
-
-    st.markdown("##### 📷 静止画の挿入（Googleドライブ共有リンク または 直接ファイル）")
-    
-    # Googleドライブ画像リンク入力欄
+    st.markdown("##### 📷 Googleドライブ 静止画共有リンク")
     drive_imgs_input = st.text_area(
-        "Googleドライブ 静止画の共有リンク（複数ある場合は改行して貼り付け・最大5枚）",
+        "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
         key=f"new_drive_imgs_{fk}"
     )
-    
-    img_files = st.file_uploader("または端末から静止画ファイルを直接アップロード（最大5枚）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
+
+    st.markdown("##### 💻 または直接ファイルからアップロード")
+    m_col1, m_col2 = st.columns(2)
+    with m_col1:
+        v1_file = st.file_uploader("スイング動画 1 (mp4/mov)", type=["mp4", "mov"], key=f"v1_{fk}")
+    with m_col2:
+        v2_file = st.file_uploader("スイング動画 2 (mp4/mov)", type=["mp4", "mov"], key=f"v2_{fk}")
+
+    img_files = st.file_uploader("静止画ファイル (jpg/png・最大5枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
 
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
     if save_clicked:
         if img_files and len(img_files) > 5:
-            st.error("❌ 保存に失敗しました: アップロード画像は最大5枚までにしてください。")
+            st.error("❌ 保存に失敗しました: 直接アップロード画像は最大5枚までにしてください。")
         else:
             try:
                 v1_path = ""
@@ -499,7 +504,6 @@ with tab_new:
                     "down_release": down_release,
                 }
                 
-                # Googleドライブの改行区切りURLをカンマ区切りで保存
                 drive_imgs_clean = ",".join([line.strip() for line in drive_imgs_input.splitlines() if line.strip()])
                 
                 save_lesson(
@@ -559,16 +563,16 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # Googleフォト リンクボタン表示
+                # Googleドライブ 動画再生ボタン
                 if r_v1_url or r_v2_url:
-                    st.markdown("##### 🔗 Googleフォト クラウド動画")
+                    st.markdown("##### 🎬 Googleドライブ 動画")
                     link_col1, link_col2 = st.columns(2)
                     with link_col1:
                         if r_v1_url:
-                            st.link_button("▶️️ Googleフォトで動画1を再生", r_v1_url, use_container_width=True)
+                            st.link_button("▶️ Googleドライブで動画1を再生", r_v1_url, use_container_width=True)
                     with link_col2:
                         if r_v2_url:
-                            st.link_button("▶️ Googleフォトで動画2を再生", r_v2_url, use_container_width=True)
+                            st.link_button("▶️ Googleドライブで動画2を再生", r_v2_url, use_container_width=True)
 
                 # アップロード動画の再生
                 if (r_v1 and os.path.exists(r_v1)) or (r_v2 and os.path.exists(r_v2)):
@@ -584,13 +588,19 @@ with tab_history:
                 
                 # Googleドライブ静止画の表示
                 if r_drive_imgs:
-                    drive_list = [convert_drive_url_to_direct(u.strip()) for u in r_drive_imgs.split(",") if u.strip()]
-                    if drive_list:
+                    drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
+                    if drive_raw_list:
                         st.markdown("##### 📷 Googleドライブ 静止画")
-                        d_cols = st.columns(min(len(drive_list), 5))
-                        for idx, d_url in enumerate(drive_list):
+                        d_cols = st.columns(min(len(drive_raw_list), 5))
+                        for idx, d_url in enumerate(drive_raw_list):
                             with d_cols[idx]:
-                                st.image(d_url, use_container_width=True, caption=f"ドライブ画像 {idx+1}")
+                                local_p = get_drive_image_path(d_url)
+                                if local_p and os.path.exists(local_p):
+                                    img = Image.open(local_p)
+                                    st.image(img, use_container_width=True, caption=f"静止画 {idx+1}")
+                                else:
+                                    st.info(f"静止画 {idx+1}")
+                                st.link_button("🔍 ドライブで拡大表示", d_url, use_container_width=True)
 
                 # アップロード静止画の表示
                 if r_imgs:
@@ -643,22 +653,21 @@ with tab_history:
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
-                    st.markdown("**🔗 メディアリンクの変更・追加:**")
+                    st.markdown("**🎬 Googleドライブ動画リンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
                     with ed_u1:
                         edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
                     with ed_u2:
                         edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url or "", key=f"ed_v2_url_{r_id}_{rf_k}")
 
-                    # 既存のドライブ画像リンクを改行形式に戻して表示
                     existing_drive_imgs_text = "\n".join((r_drive_imgs or "").split(",")) if r_drive_imgs else ""
                     edit_drive_imgs_input = st.text_area(
-                        "Googleドライブ 静止画リンク（改行で区切って入力）",
+                        "📷 Googleドライブ 静止画リンク（改行で区切って入力）",
                         value=existing_drive_imgs_text,
                         key=f"ed_drive_imgs_{r_id}_{rf_k}"
                     )
 
-                    st.markdown("**📁 直接ファイルアップロードの変更 (未選択時は維持):**")
+                    st.markdown("**💻 直接ファイルアップロードの変更 (未選択時は維持):**")
                     ed_m1, ed_m2 = st.columns(2)
                     with ed_m1:
                         ed_v1_file = st.file_uploader(f"動画 1 (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
