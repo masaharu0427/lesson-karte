@@ -27,29 +27,54 @@ def extract_drive_id(url):
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
-# オリジナル縦横比を崩さずに綺麗に表示する埋め込みコンポーネント
-def render_drive_embed(file_id, is_video=True, title=""):
-    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
-    
-    if is_video:
-        # 動画：縦撮りスイング(9:16)・横撮り(16:9)のどちらでも崩れない高さ・コンテナ設定
-        container_style = """
+# スマホでも邪魔なUIが出ないネイティブHTML5動画プレーヤー
+def render_clean_video_player(video_src, title=""):
+    # GoogleドライブのIDまたはURLからダイレクトストリーミング用URLを作成
+    file_id = extract_drive_id(video_src)
+    if file_id:
+        src_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    else:
+        src_url = video_src
+
+    return f"""
+    <div style="margin-bottom: 14px; width: 100%;">
+        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
+        <div style="
             width: 100%;
-            height: 480px;
-            background-color: #050505;
+            background-color: #000;
             border-radius: 8px;
             overflow: hidden;
-            border: 1px solid #333;
             display: flex;
-            align-items: center;
             justify-content: center;
-        """
-        iframe_style = "width: 100%; height: 100%; border: none;"
-    else:
-        # 静止画：スイング解析写真・弾道データ画像向け
-        container_style = """
+            align-items: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        ">
+            <video 
+                controls 
+                playsinline 
+                preload="metadata"
+                style="
+                    width: 100%; 
+                    max-height: 520px; 
+                    object-fit: contain; 
+                    display: block;
+                ">
+                <source src="{src_url}" type="video/mp4">
+                お使いのブラウザは動画タグに対応していません。
+            </video>
+        </div>
+    </div>
+    """
+
+# 静止画専用の埋め込み表示コンポーネント
+def render_drive_image_embed(file_id, title=""):
+    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+    return f"""
+    <div style="margin-bottom: 12px; width: 100%;">
+        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
+        <div style="
             width: 100%;
-            height: 360px;
+            height: 340px;
             background-color: #111;
             border-radius: 8px;
             overflow: hidden;
@@ -57,17 +82,10 @@ def render_drive_embed(file_id, is_video=True, title=""):
             display: flex;
             align-items: center;
             justify-content: center;
-        """
-        iframe_style = "width: 100%; height: 100%; border: none;"
-    
-    return f"""
-    <div style="margin-bottom: 12px; width: 100%;">
-        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
-        <div style="{container_style}">
+        ">
             <iframe 
                 src="{preview_url}" 
-                style="{iframe_style}" 
-                allow="autoplay" 
+                style="width: 100%; height: 100%; border: none;" 
                 allowfullscreen>
             </iframe>
         </div>
@@ -465,14 +483,14 @@ with tab_new:
     st.markdown("---")
     st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
     
-    st.markdown("##### 📁 Googleドライブ 動画共有リンク（オリジナル比率で直接再生）")
+    st.markdown("##### 📁 Googleドライブ 動画共有リンク（すっきり見やすいプレーヤーで再生）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
         v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v1_url_{fk}")
     with u_col2:
         v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📷 Googleドライブ 静止画共有リンク（オリジナル比率で直接表示）")
+    st.markdown("##### 📷 Googleドライブ 静止画共有リンク")
     drive_imgs_input = st.text_area(
         "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
@@ -583,39 +601,29 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # Googleドライブ 動画（オリジナル比率でインライン直接再生）
-                if r_v1_url or r_v2_url:
-                    st.markdown("##### 🎬 スイング動画 (Googleドライブ直接再生)")
+                # スイング動画の再生エリア（Googleドライブ動画優先、なければ直接アップロード動画）
+                has_video1 = bool(r_v1_url or (r_v1 and os.path.exists(r_v1)))
+                has_video2 = bool(r_v2_url or (r_v2 and os.path.exists(r_v2)))
+
+                if has_video1 or has_video2:
+                    st.markdown("##### 🎬 スイング動画")
                     dv_col1, dv_col2 = st.columns(2)
+                    
                     with dv_col1:
                         if r_v1_url:
-                            v1_id = extract_drive_id(r_v1_url)
-                            if v1_id:
-                                st.markdown(render_drive_embed(v1_id, is_video=True, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
-                            else:
-                                st.link_button("▶️ 動画1を開く", r_v1_url)
+                            st.markdown(render_clean_video_player(r_v1_url, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
+                        elif r_v1 and os.path.exists(r_v1):
+                            st.caption("🎥 動画 1 (後方)")
+                            st.video(r_v1)
+                            
                     with dv_col2:
                         if r_v2_url:
-                            v2_id = extract_drive_id(r_v2_url)
-                            if v2_id:
-                                st.markdown(render_drive_embed(v2_id, is_video=True, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
-                            else:
-                                st.link_button("▶️ 動画2を開く", r_v2_url)
-
-                # アップロード動画の再生（オリジナル縦横比を維持）
-                if (r_v1 and os.path.exists(r_v1)) or (r_v2 and os.path.exists(r_v2)):
-                    st.markdown("##### 🎥 アップロード動画")
-                    v_col1, v_col2 = st.columns(2)
-                    with v_col1:
-                        if r_v1 and os.path.exists(r_v1):
-                            st.caption("動画 1")
-                            st.video(r_v1)
-                    with v_col2:
-                        if r_v2 and os.path.exists(r_v2):
-                            st.caption("動画 2")
+                            st.markdown(render_clean_video_player(r_v2_url, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
+                        elif r_v2 and os.path.exists(r_v2):
+                            st.caption("🎥 動画 2 (正面)")
                             st.video(r_v2)
-                
-                # Googleドライブ 静止画（オリジナル比率で直接プレビュー）
+
+                # Googleドライブ 静止画
                 if r_drive_imgs:
                     drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
                     if drive_raw_list:
@@ -627,11 +635,11 @@ with tab_history:
                             with d_cols[col_idx]:
                                 img_id = extract_drive_id(d_url)
                                 if img_id:
-                                    st.markdown(render_drive_embed(img_id, is_video=False, title=f"静止画 {idx+1}"), unsafe_allow_html=True)
+                                    st.markdown(render_drive_image_embed(img_id, title=f"静止画 {idx+1}"), unsafe_allow_html=True)
                                 else:
                                     st.link_button(f"🔍 静止画 {idx+1} を開く", d_url, use_container_width=True)
 
-                # アップロード静止画の表示（オリジナル比率を保持）
+                # アップロード静止画
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
