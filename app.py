@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import os
 import re
 from datetime import datetime, date
 
@@ -12,23 +13,27 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# GoogleドライブURLを最適なダイレクト閲覧用URLに成形する関数
-def format_drive_view_url(url):
+# DB接続ヘルパー（カラム名で安全にアクセスできるRowファクトリ設定）
+def get_db_connection():
+    conn = sqlite3.connect("golf_lesson.db")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# GoogleドライブURLの整形（空文字や不要な空白を除去）
+def clean_drive_url(url):
     if not url:
         return ""
     url = url.strip()
-    # ファイルIDの抽出
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
     if not match:
         match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
     if match:
-        file_id = match.group(1)
-        return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+        return f"https://drive.google.com/file/d/{match.group(1)}/view?usp=sharing"
     return url
 
 # データベース初期化・マイグレーション
 def init_db():
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     
     # 生徒テーブル
@@ -75,9 +80,9 @@ def init_db():
         )
     ''')
     
-    # カラムのマイグレーション
+    # カラムの自動追加
     c.execute("PRAGMA table_info(lessons)")
-    existing_cols = [col[1] for col in c.fetchall()]
+    existing_cols = [col["name"] for col in c.fetchall()]
     if "target_goal" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN target_goal TEXT")
     if "lesson_practice" not in existing_cols:
@@ -98,17 +103,17 @@ def init_db():
 
 init_db()
 
-# DB操作関数：生徒
+# DB操作関数
 def get_students():
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, name, handicap, goal FROM students ORDER BY name")
-    data = c.fetchall()
+    rows = [dict(row) for row in c.fetchall()]
     conn.close()
-    return data
+    return rows
 
 def add_student(name, handicap, goal):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute("INSERT INTO students (name, handicap, goal) VALUES (?, ?, ?)", (name, handicap, goal))
@@ -118,7 +123,7 @@ def add_student(name, handicap, goal):
     conn.close()
 
 def update_student(student_id, name, handicap, goal):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute('UPDATE students SET name = ?, handicap = ?, goal = ? WHERE id = ?', (name, handicap, goal, student_id))
@@ -130,24 +135,23 @@ def update_student(student_id, name, handicap, goal):
     return success
 
 def delete_student(student_id):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM lessons WHERE student_id = ?", (student_id,))
     c.execute("DELETE FROM students WHERE id = ?", (student_id,))
     conn.commit()
     conn.close()
 
-# DB操作関数：コーチ
 def get_coaches():
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, name FROM coaches ORDER BY name")
-    data = c.fetchall()
+    rows = [dict(row) for row in c.fetchall()]
     conn.close()
-    return data
+    return rows
 
 def add_coach(name):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute("INSERT INTO coaches (name) VALUES (?)", (name,))
@@ -159,15 +163,14 @@ def add_coach(name):
     return success
 
 def delete_coach(coach_id):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM coaches WHERE id = ?", (coach_id,))
     conn.commit()
     conn.close()
 
-# DB操作関数：レッスン記録
 def save_lesson(student_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
         INSERT INTO lessons (
@@ -191,7 +194,7 @@ def save_lesson(student_id, lesson_date, coach_name, scores, target_goal, lesson
     conn.close()
 
 def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
         UPDATE lessons 
@@ -222,25 +225,18 @@ def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesso
     conn.close()
 
 def delete_lesson(lesson_id):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
     conn.commit()
     conn.close()
 
+# 辞書型（名前指定）で取得することで列順ズレを防止
 def get_student_history(student_id):
-    conn = sqlite3.connect("golf_lesson.db")
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''
-        SELECT id, lesson_date, addr_posture, addr_align, back_path, back_top, 
-               down_plane, down_release, video1, video2, images, 
-               target_goal, lesson_practice, evaluation_note,
-               v1_url, v2_url, coach_name, drive_images
-        FROM lessons 
-        WHERE student_id = ? 
-        ORDER BY lesson_date DESC, id DESC
-    ''', (student_id,))
-    rows = c.fetchall()
+    c.execute("SELECT * FROM lessons WHERE student_id = ? ORDER BY lesson_date DESC, id DESC", (student_id,))
+    rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
 
@@ -261,7 +257,7 @@ def render_score_badge(score):
     return f'<span style="background-color:{bg}; color:{color}; font-weight:bold; font-size:18px; padding:3px 12px; border-radius:6px; border:1px solid {color};">{score}</span>'
 
 def render_text_box(content, box_type="blue"):
-    if not content or not content.strip():
+    if not content or not str(content).strip():
         return '<div style="color: #888; font-style: italic; padding: 8px;">（未記入）</div>'
     
     if box_type == "blue":
@@ -287,7 +283,7 @@ def render_text_box(content, box_type="blue"):
 # --- 画面構成 ---
 st.title("⛳ ゴルフレッスン スイングチェックカルテ")
 
-# サイドバー：生徒管理 & コーチ管理
+# サイドバー
 st.sidebar.header("生徒管理")
 raw_students = get_students()
 
@@ -305,7 +301,7 @@ if not raw_students:
     st.info("サイドバーから生徒を登録してください。")
     st.stop()
 
-student_dict = {s[1]: {"id": s[0], "hdcp": s[2], "goal": s[3]} for s in raw_students}
+student_dict = {s["name"]: s for s in raw_students}
 selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_dict.keys()))
 
 curr_student = student_dict[selected_name]
@@ -313,8 +309,8 @@ selected_id = curr_student["id"]
 
 with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expanded=False):
     edit_s_name = st.text_input("氏名", value=selected_name, key=f"s_name_{selected_id}")
-    edit_s_hdcp = st.text_input("ハンデ / 平均スコア", value=curr_student["hdcp"] or "", key=f"s_hdcp_{selected_id}")
-    edit_s_goal = st.text_input("長期目標", value=curr_student["goal"] or "", key=f"s_goal_{selected_id}")
+    edit_s_hdcp = st.text_input("ハンデ / 平均スコア", value=curr_student.get("handicap") or "", key=f"s_hdcp_{selected_id}")
+    edit_s_goal = st.text_input("長期目標", value=curr_student.get("goal") or "", key=f"s_goal_{selected_id}")
     
     if st.button("💾 プロフィールを更新", type="primary", key=f"btn_up_s_{selected_id}"):
         if edit_s_name.strip():
@@ -336,7 +332,7 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
 st.sidebar.markdown("---")
 st.sidebar.header("コーチ管理")
 raw_coaches = get_coaches()
-coach_list = [c[1] for c in raw_coaches]
+coach_list = [c["name"] for c in raw_coaches]
 
 with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expanded=False):
     new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
@@ -351,14 +347,14 @@ with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expande
     if raw_coaches:
         st.markdown("---")
         st.caption("登録済みコーチの削除:")
-        coach_to_del = st.selectbox("削除するコーチを選択", options=[c[1] for c in raw_coaches], key="coach_to_del_select")
-        del_coach_id = [c[0] for c in raw_coaches if c[1] == coach_to_del][0]
+        coach_to_del = st.selectbox("削除するコーチを選択", options=[c["name"] for c in raw_coaches], key="coach_to_del_select")
+        del_coach_id = [c["id"] for c in raw_coaches if c["name"] == coach_to_del][0]
         if st.button(f"🗑️ {coach_to_del} を削除", key="btn_del_coach"):
             delete_coach(del_coach_id)
             st.warning(f"{coach_to_del} を削除しました。")
             st.rerun()
 
-st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student['hdcp'] or '未設定'} ｜ **長期目標:** {curr_student['goal'] or '未設定'}")
+st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student.get('handicap') or '未設定'} ｜ **長期目標:** {curr_student.get('goal') or '未設定'}")
 
 tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
 
@@ -417,8 +413,8 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（Google ドライブ共有リンク）")
-    st.caption("※Googleドライブの共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。サーバー容量を消費せず、スマホ全画面で快適に再生できます。")
+    st.markdown("### ■ Google ドライブ共有リンク登録")
+    st.caption("※共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。1タップで端末の全画面高画質ビューが起動します。")
     
     u_col1, u_col2 = st.columns(2)
     with u_col1:
@@ -427,7 +423,7 @@ with tab_new:
         v2_url = st.text_input("🎥 動画 2 共有リンク（正面など）", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v2_url_{fk}")
 
     drive_imgs_input = st.text_area(
-        "📷 静止画 共有リンク（スイング写真・弾道データ等。複数ある場合は改行して入力）",
+        "📷 静止画 共有リンク（複数ある場合は改行して入力）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
         key=f"new_drive_imgs_{fk}"
     )
@@ -445,10 +441,9 @@ with tab_new:
                 "down_release": down_release,
             }
             
-            # ドライブリンクを成形して保存
-            clean_v1 = format_drive_view_url(v1_url)
-            clean_v2 = format_drive_view_url(v2_url)
-            drive_imgs_clean = ",".join([format_drive_view_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
+            clean_v1 = clean_drive_url(v1_url)
+            clean_v2 = clean_drive_url(v2_url)
+            drive_imgs_clean = ",".join([clean_drive_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
             
             save_lesson(
                 selected_id, lesson_date, new_coach_val, scores,
@@ -477,7 +472,15 @@ with tab_history:
         st.info("まだ保存されたレッスン記録がありません。")
     else:
         for rec in records:
-            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url, r_coach_name, r_drive_imgs = rec
+            r_id = rec["id"]
+            r_date = rec["lesson_date"]
+            r_coach_name = rec.get("coach_name") or ""
+            r_target_goal = rec.get("target_goal") or ""
+            r_lesson_practice = rec.get("lesson_practice") or ""
+            r_eval_note = rec.get("evaluation_note") or ""
+            r_v1_url = rec.get("v1_url") or ""
+            r_v2_url = rec.get("v2_url") or ""
+            r_drive_images = rec.get("drive_images") or ""
             
             coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
             expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
@@ -492,7 +495,7 @@ with tab_history:
                 st.markdown(f"""
                 | アドレス: 姿勢 | アドレス: 向き | バック: 軌道 | バック: トップ | ダウン: プレーン | ダウン: リリース |
                 | :---: | :---: | :---: | :---: | :---: | :---: |
-                | {render_score_badge(r_p)} | {render_score_badge(r_a)} | {render_score_badge(r_bp)} | {render_score_badge(r_bt)} | {render_score_badge(r_dp)} | {render_score_badge(r_dr)} |
+                | {render_score_badge(rec.get("addr_posture"))} | {render_score_badge(rec.get("addr_align"))} | {render_score_badge(rec.get("back_path"))} | {render_score_badge(rec.get("back_top"))} | {render_score_badge(rec.get("down_plane"))} | {render_score_badge(rec.get("down_release"))} |
                 """, unsafe_allow_html=True)
                 
                 t_col1, t_col2 = st.columns(2)
@@ -506,50 +509,48 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # --- メディア閲覧カードエリア（1タップ全画面再生） ---
-                has_v1 = bool(r_v1_url)
-                has_v2 = bool(r_v2_url)
-                drive_imgs_list = [u.strip() for u in (r_drive_images or "").split(",") if u.strip()]
+                # --- 動画・静止画 1タップ全画面再生カード ---
+                has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
+                has_v2 = bool(r_v2_url and r_v2_url.startswith("http"))
+                drive_imgs_list = [u.strip() for u in r_drive_images.split(",") if u.strip() and u.strip().startswith("http")]
 
                 if has_v1 or has_v2 or drive_imgs_list:
                     st.markdown("---")
-                    st.markdown("### 🎬 スイング動画・静止画（タップして全画面再生）")
+                    st.markdown("### 🎬 スイング動画・静止画（タップで全画面再生）")
                     
-                    # 動画カード
                     if has_v1 or has_v2:
                         v_col1, v_col2 = st.columns(2)
                         with v_col1:
                             if has_v1:
                                 st.markdown("""
-                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:16px; text-align:center; margin-bottom:10px;">
-                                    <div style="font-size:24px; margin-bottom:4px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:15px; color:#1e293b; margin-bottom:8px;">スイング動画 1 (後方)</div>
-                                    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">スマホ全画面・スロー/コマ送り再生対応</div>
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:14px; text-align:center; margin-bottom:8px;">
+                                    <div style="font-size:22px; margin-bottom:2px;">🎥</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">動画 1 (後方)</div>
+                                    <div style="font-size:12px; color:#64748b;">全画面・スロー/コマ送り対応</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.link_button("▶️ 動画1を全画面で再生する", r_v1_url, use_container_width=True, type="primary")
+                                st.link_button("▶️ 動画1を全画面で再生", r_v1_url, use_container_width=True, type="primary")
                         with v_col2:
                             if has_v2:
                                 st.markdown("""
-                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:16px; text-align:center; margin-bottom:10px;">
-                                    <div style="font-size:24px; margin-bottom:4px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:15px; color:#1e293b; margin-bottom:8px;">スイング動画 2 (正面)</div>
-                                    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">スマホ全画面・スロー/コマ送り再生対応</div>
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:14px; text-align:center; margin-bottom:8px;">
+                                    <div style="font-size:22px; margin-bottom:2px;">🎥</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">動画 2 (正面)</div>
+                                    <div style="font-size:12px; color:#64748b;">全画面・スロー/コマ送り対応</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.link_button("▶️ 動画2を全画面で再生する", r_v2_url, use_container_width=True, type="primary")
+                                st.link_button("▶️ 動画2を全画面で再生", r_v2_url, use_container_width=True, type="primary")
 
-                    # 静止画カード
                     if drive_imgs_list:
                         st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
-                        st.caption("📷 静止画・弾道解析データ:")
+                        st.caption("📷 静止画・解析データ:")
                         num_img_cols = min(len(drive_imgs_list), 4)
                         img_cols = st.columns(num_img_cols)
                         for idx, img_url in enumerate(drive_imgs_list):
                             with img_cols[idx % num_img_cols]:
                                 st.markdown(f"""
-                                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; text-align:center; margin-bottom:6px;">
-                                    <div style="font-size:20px;">🖼️</div>
+                                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px; text-align:center; margin-bottom:6px;">
+                                    <div style="font-size:18px;">🖼️</div>
                                     <div style="font-weight:bold; font-size:13px; color:#334155;">静止画 {idx+1}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
@@ -557,7 +558,7 @@ with tab_history:
 
                 st.markdown("---")
                 
-                # 編集・日付変更・コーチ変更・削除・メディア追加エリア
+                # 編集エリア
                 with st.expander(edit_expander_title, expanded=False):
                     try:
                         parsed_date = datetime.strptime(r_date, "%Y-%m-%d").date()
@@ -576,33 +577,33 @@ with tab_history:
                     st.markdown("**評価スコアの修正:**")
                     ec1, ec2, ec3 = st.columns(3)
                     with ec1:
-                        e_p = st.radio("アドレス: 姿勢", [1, 2, 3], index=[1, 2, 3].index(r_p) if r_p in [1, 2, 3] else None, horizontal=True, key=f"e_p_{r_id}_{rf_k}")
-                        e_a = st.radio("アドレス: 向き", [1, 2, 3], index=[1, 2, 3].index(r_a) if r_a in [1, 2, 3] else None, horizontal=True, key=f"e_a_{r_id}_{rf_k}")
+                        e_p = st.radio("アドレス: 姿勢", [1, 2, 3], index=[1, 2, 3].index(rec.get("addr_posture")) if rec.get("addr_posture") in [1, 2, 3] else None, horizontal=True, key=f"e_p_{r_id}_{rf_k}")
+                        e_a = st.radio("アドレス: 向き", [1, 2, 3], index=[1, 2, 3].index(rec.get("addr_align")) if rec.get("addr_align") in [1, 2, 3] else None, horizontal=True, key=f"e_a_{r_id}_{rf_k}")
                     with ec2:
-                        e_bp = st.radio("バック: 軌道", [1, 2, 3], index=[1, 2, 3].index(r_bp) if r_bp in [1, 2, 3] else None, horizontal=True, key=f"e_bp_{r_id}_{rf_k}")
-                        e_bt = st.radio("バック: トップ", [1, 2, 3], index=[1, 2, 3].index(r_bt) if r_bt in [1, 2, 3] else None, horizontal=True, key=f"e_bt_{r_id}_{rf_k}")
+                        e_bp = st.radio("バック: 軌道", [1, 2, 3], index=[1, 2, 3].index(rec.get("back_path")) if rec.get("back_path") in [1, 2, 3] else None, horizontal=True, key=f"e_bp_{r_id}_{rf_k}")
+                        e_bt = st.radio("バック: トップ", [1, 2, 3], index=[1, 2, 3].index(rec.get("back_top")) if rec.get("back_top") in [1, 2, 3] else None, horizontal=True, key=f"e_bt_{r_id}_{rf_k}")
                     with ec3:
-                        e_dp = st.radio("ダウン: プレーン", [1, 2, 3], index=[1, 2, 3].index(r_dp) if r_dp in [1, 2, 3] else None, horizontal=True, key=f"e_dp_{r_id}_{rf_k}")
-                        e_dr = st.radio("ダウン: リリース", [1, 2, 3], index=[1, 2, 3].index(r_dr) if r_dr in [1, 2, 3] else None, horizontal=True, key=f"e_dr_{r_id}_{rf_k}")
+                        e_dp = st.radio("ダウン: プレーン", [1, 2, 3], index=[1, 2, 3].index(rec.get("down_plane")) if rec.get("down_plane") in [1, 2, 3] else None, horizontal=True, key=f"e_dp_{r_id}_{rf_k}")
+                        e_dr = st.radio("ダウン: リリース", [1, 2, 3], index=[1, 2, 3].index(rec.get("down_release")) if rec.get("down_release") in [1, 2, 3] else None, horizontal=True, key=f"e_dr_{r_id}_{rf_k}")
                     
                     st.markdown("**レッスンカルテ内容の修正:**")
                     ed_col1, ed_col2 = st.columns(2)
                     with ed_col1:
-                        edit_target_goal = st.text_area("📌 取り組んでいる課題・目標", value=r_target_goal or "", key=f"ed_goal_{r_id}_{rf_k}")
+                        edit_target_goal = st.text_area("📌 取り組んでいる課題・目標", value=r_target_goal, key=f"ed_goal_{r_id}_{rf_k}")
                     with ed_col2:
-                        edit_lesson_practice = st.text_area("🏌️ 今回のレッスン・練習", value=r_lesson_practice or "", key=f"ed_practice_{r_id}_{rf_k}")
+                        edit_lesson_practice = st.text_area("🏌️ 今回のレッスン・練習", value=r_lesson_practice, key=f"ed_practice_{r_id}_{rf_k}")
                     
-                    edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
+                    edit_eval_note = st.text_area("📝 評価", value=r_eval_note, key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
                     st.markdown("**🎬 Google ドライブ共有リンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
                     with ed_u1:
-                        edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
+                        edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url, key=f"ed_v1_url_{r_id}_{rf_k}")
                     with ed_u2:
-                        edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url or "", key=f"ed_v2_url_{r_id}_{rf_k}")
+                        edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url, key=f"ed_v2_url_{r_id}_{rf_k}")
 
-                    existing_drive_imgs_text = "\n".join((r_drive_imgs or "").split(",")) if r_drive_imgs else ""
+                    existing_drive_imgs_text = "\n".join((r_drive_images).split(",")) if r_drive_images else ""
                     edit_drive_imgs_input = st.text_area(
                         "📷 静止画リンク（改行で区切って入力）",
                         value=existing_drive_imgs_text,
@@ -613,9 +614,9 @@ with tab_history:
                     with btn_c1:
                         if st.button("💾 日付・修正内容を保存する", key=f"btn_update_{r_id}_{rf_k}", type="primary"):
                             try:
-                                clean_ed_v1 = format_drive_view_url(edit_v1_url)
-                                clean_ed_v2 = format_drive_view_url(edit_v2_url)
-                                clean_ed_imgs = ",".join([format_drive_view_url(line) for line in edit_drive_imgs_input.splitlines() if line.strip()])
+                                clean_ed_v1 = clean_drive_url(edit_v1_url)
+                                clean_ed_v2 = clean_drive_url(edit_v2_url)
+                                clean_ed_imgs = ",".join([clean_drive_url(line) for line in edit_drive_imgs_input.splitlines() if line.strip()])
 
                                 updated_scores = {
                                     "addr_posture": e_p,
@@ -639,7 +640,7 @@ with tab_history:
                                 st.error(f"❌ 更新に失敗しました: {e}")
                     with btn_c2:
                         confirm_delete = st.checkbox("削除確認", key=f"chk_del_{r_id}_{rf_k}")
-                        if st.button("🗑️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
+                        if st.button("🗑️️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
                             try:
                                 delete_lesson(r_id)
                                 st.session_state.refresh_key += 1
