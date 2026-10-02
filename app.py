@@ -2,7 +2,6 @@ import streamlit as st
 import sqlite3
 import os
 import re
-import urllib.request
 from datetime import datetime, date
 from PIL import Image
 
@@ -11,9 +10,7 @@ st.set_page_config(page_title="ゴルフ スイングチェックカルテ", lay
 
 # 保存先フォルダの作成
 UPLOAD_DIR = "uploaded_media"
-DRIVE_CACHE_DIR = "drive_cache"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(DRIVE_CACHE_DIR, exist_ok=True)
 
 # 画面リセット用のセッション管理
 if "refresh_key" not in st.session_state:
@@ -21,7 +18,7 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# GoogleドライブのURLからファイルIDを抽出する関数
+# GoogleドライブURLからファイルIDを抽出する関数
 def extract_drive_id(url):
     if not url:
         return None
@@ -30,49 +27,22 @@ def extract_drive_id(url):
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
-# Googleドライブの画像を安全に取得する関数（破損ファイル・HTMLエラーを完全ガード）
-def get_drive_image_path(url):
-    file_id = extract_drive_id(url)
-    if not file_id:
-        return None
-    cached_path = os.path.join(DRIVE_CACHE_DIR, f"{file_id}.jpg")
-    
-    # 既存キャッシュが有効な画像かチェック（壊れていれば削除）
-    if os.path.exists(cached_path):
-        try:
-            with Image.open(cached_path) as test_img:
-                test_img.verify()
-            return cached_path
-        except Exception:
-            try:
-                os.remove(cached_path)
-            except Exception:
-                pass
-
-    # ダウンロード試行
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    try:
-        req = urllib.request.Request(
-            download_url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = response.read()
-            # HTMLテキストが返ってきた場合は保存しない
-            if len(data) > 1000 and not data.strip().startswith(b"<"):
-                with open(cached_path, "wb") as f:
-                    f.write(data)
-                # PILで開けるか即座に検証
-                try:
-                    with Image.open(cached_path) as test_img:
-                        test_img.verify()
-                    return cached_path
-                except Exception:
-                    if os.path.exists(cached_path):
-                        os.remove(cached_path)
-    except Exception:
-        pass
-    return None
+# Googleドライブの埋め込みプレビュー用HTMLコンポーネント（動画・静止画共通）
+def render_drive_embed(file_id, height="320px", title=""):
+    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+    return f"""
+    <div style="margin-bottom: 8px;">
+        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#444;">{title}</div>' if title else ''}
+        <iframe 
+            src="{preview_url}" 
+            width="100%" 
+            height="{height}" 
+            allow="autoplay" 
+            style="border: 1px solid #ddd; border-radius: 8px; background-color: #000;" 
+            allowfullscreen>
+        </iframe>
+    </div>
+    """
 
 # データベース初期化・マイグレーション
 def init_db():
@@ -399,7 +369,7 @@ with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expande
         st.caption("登録済みコーチの削除:")
         coach_to_del = st.selectbox("削除するコーチを選択", options=[c[1] for c in raw_coaches], key="coach_to_del_select")
         del_coach_id = [c[0] for c in raw_coaches if c[1] == coach_to_del][0]
-        if st.button(f"🗑️ {coach_to_del} を削除", key="btn_del_coach"):
+        if st.button(f"🗑️️ {coach_to_del} を削除", key="btn_del_coach"):
             delete_coach(del_coach_id)
             st.warning(f"{coach_to_del} を削除しました。")
             st.rerun()
@@ -465,14 +435,14 @@ with tab_new:
     st.markdown("---")
     st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
     
-    st.markdown("##### 📁 Googleドライブ 動画共有リンク")
+    st.markdown("##### 📁 Googleドライブ 動画共有リンク（画面内で直接再生されます）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/...)", value="", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/...)", value="", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📷 Googleドライブ 静止画共有リンク")
+    st.markdown("##### 📷 Googleドライブ 静止画共有リンク（画面内に直接表示されます）")
     drive_imgs_input = st.text_area(
         "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
@@ -583,57 +553,54 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # Googleドライブ 動画再生ボタン
+                # Googleドライブ 動画（画面内で直接再生）
                 if r_v1_url or r_v2_url:
-                    st.markdown("##### 🎬 Googleドライブ 動画")
-                    link_col1, link_col2 = st.columns(2)
-                    with link_col1:
+                    st.markdown("##### 🎬 スイング動画 (Googleドライブ直接再生)")
+                    dv_col1, dv_col2 = st.columns(2)
+                    with dv_col1:
                         if r_v1_url:
-                            st.link_button("▶️ Googleドライブで動画1を再生", r_v1_url, use_container_width=True)
-                    with link_col2:
+                            v1_id = extract_drive_id(r_v1_url)
+                            if v1_id:
+                                st.markdown(render_drive_embed(v1_id, height="320px", title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
+                            else:
+                                st.link_button("▶️ 動画1を開く", r_v1_url)
+                    with dv_col2:
                         if r_v2_url:
-                            st.link_button("▶️ Googleドライブで動画2を再生", r_v2_url, use_container_width=True)
+                            v2_id = extract_drive_id(r_v2_url)
+                            if v2_id:
+                                st.markdown(render_drive_embed(v2_id, height="320px", title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
+                            else:
+                                st.link_button("▶️ 動画2を開く", r_v2_url)
 
                 # アップロード動画の再生
                 if (r_v1 and os.path.exists(r_v1)) or (r_v2 and os.path.exists(r_v2)):
+                    st.markdown("##### 🎥 アップロード動画")
                     v_col1, v_col2 = st.columns(2)
                     with v_col1:
                         if r_v1 and os.path.exists(r_v1):
-                            st.caption("🎥 スイング動画 1")
+                            st.caption("動画 1")
                             st.video(r_v1)
                     with v_col2:
                         if r_v2 and os.path.exists(r_v2):
-                            st.caption("🎥 スイング動画 2")
+                            st.caption("動画 2")
                             st.video(r_v2)
                 
-                # Googleドライブ静止画の表示（安全ガード付き）
+                # Googleドライブ 静止画（画面内に直接プレビュー表示）
                 if r_drive_imgs:
                     drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
                     if drive_raw_list:
                         st.markdown("##### 📷 Googleドライブ 静止画")
-                        d_cols = st.columns(min(len(drive_raw_list), 5))
+                        d_cols = st.columns(min(len(drive_raw_list), 4))
                         for idx, d_url in enumerate(drive_raw_list):
-                            with d_cols[idx]:
-                                local_p = get_drive_image_path(d_url)
-                                image_shown = False
-                                if local_p and os.path.exists(local_p):
-                                    try:
-                                        img = Image.open(local_p)
-                                        st.image(img, use_container_width=True, caption=f"静止画 {idx+1}")
-                                        image_shown = True
-                                    except Exception:
-                                        # 開けない不正ファイルは安全に破棄
-                                        try:
-                                            os.remove(local_p)
-                                        except Exception:
-                                            pass
-                                
-                                if not image_shown:
-                                    st.info(f"静止画 {idx+1}")
-                                
-                                st.link_button("🔍 ドライブで確認", d_url, use_container_width=True)
+                            col_idx = idx % 4
+                            with d_cols[col_idx]:
+                                img_id = extract_drive_id(d_url)
+                                if img_id:
+                                    st.markdown(render_drive_embed(img_id, height="260px", title=f"静止画 {idx+1}"), unsafe_allow_html=True)
+                                else:
+                                    st.link_button(f"🔍 静止画 {idx+1} を開く", d_url, use_container_width=True)
 
-                # アップロード静止画の表示（安全ガード付き）
+                # アップロード静止画の表示
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
