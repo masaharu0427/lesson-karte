@@ -27,61 +27,48 @@ def extract_drive_id(url):
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
-# スマホでも邪魔なUIが出ないネイティブHTML5動画プレーヤー
-def render_clean_video_player(video_src, title=""):
-    # GoogleドライブのIDまたはURLからダイレクトストリーミング用URLを作成
-    file_id = extract_drive_id(video_src)
-    if file_id:
-        src_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    else:
-        src_url = video_src
-
+# Googleドライブ動画埋め込みコンポーネント（確実に再生できるプレビュー）
+def render_drive_video_box(url, title=""):
+    file_id = extract_drive_id(url)
+    if not file_id:
+        return f'<div style="color:red; font-size:12px;">無効なGoogleドライブURLです</div>'
+    
+    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+    
     return f"""
-    <div style="margin-bottom: 14px; width: 100%;">
-        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
+    <div style="margin-bottom: 6px; width: 100%;">
+        <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
         <div style="
             width: 100%;
+            height: 380px;
             background-color: #000;
             border-radius: 8px;
             overflow: hidden;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            border: 1px solid #333;
         ">
-            <video 
-                controls 
-                playsinline 
-                preload="metadata"
-                style="
-                    width: 100%; 
-                    max-height: 520px; 
-                    object-fit: contain; 
-                    display: block;
-                ">
-                <source src="{src_url}" type="video/mp4">
-                お使いのブラウザは動画タグに対応していません。
-            </video>
+            <iframe 
+                src="{preview_url}" 
+                style="width: 100%; height: 100%; border: none;" 
+                allow="autoplay" 
+                allowfullscreen>
+            </iframe>
         </div>
     </div>
     """
 
-# 静止画専用の埋め込み表示コンポーネント
+# 静止画専用の埋め込みコンポーネント
 def render_drive_image_embed(file_id, title=""):
     preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
     return f"""
-    <div style="margin-bottom: 12px; width: 100%;">
-        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
+    <div style="margin-bottom: 6px; width: 100%;">
+        <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
         <div style="
             width: 100%;
-            height: 340px;
+            height: 320px;
             background-color: #111;
             border-radius: 8px;
             overflow: hidden;
             border: 1px solid #e2e8f0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         ">
             <iframe 
                 src="{preview_url}" 
@@ -402,7 +389,7 @@ st.sidebar.header("コーチ管理")
 raw_coaches = get_coaches()
 coach_list = [c[1] for c in raw_coaches]
 
-with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expanded=False):
+with st.sidebar.expander("🏌️‍♂️️ コーチの追加・削除", expanded=False):
     new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
     if st.button("＋ コーチを登録", key="btn_add_coach"):
         if new_coach_name.strip():
@@ -483,7 +470,7 @@ with tab_new:
     st.markdown("---")
     st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
     
-    st.markdown("##### 📁 Googleドライブ 動画共有リンク（すっきり見やすいプレーヤーで再生）")
+    st.markdown("##### 📁 Googleドライブ 動画共有リンク")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
         v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v1_url_{fk}")
@@ -601,7 +588,7 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # スイング動画の再生エリア（Googleドライブ動画優先、なければ直接アップロード動画）
+                # スイング動画の再生エリア
                 has_video1 = bool(r_v1_url or (r_v1 and os.path.exists(r_v1)))
                 has_video2 = bool(r_v2_url or (r_v2 and os.path.exists(r_v2)))
 
@@ -611,14 +598,16 @@ with tab_history:
                     
                     with dv_col1:
                         if r_v1_url:
-                            st.markdown(render_clean_video_player(r_v1_url, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
+                            st.markdown(render_drive_video_box(r_v1_url, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
+                            st.link_button("📱 スマホ全画面・クリアに再生 (推奨)", r_v1_url, use_container_width=True)
                         elif r_v1 and os.path.exists(r_v1):
                             st.caption("🎥 動画 1 (後方)")
                             st.video(r_v1)
                             
                     with dv_col2:
                         if r_v2_url:
-                            st.markdown(render_clean_video_player(r_v2_url, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
+                            st.markdown(render_drive_video_box(r_v2_url, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
+                            st.link_button("📱 スマホ全画面・クリアに再生 (推奨)", r_v2_url, use_container_width=True)
                         elif r_v2 and os.path.exists(r_v2):
                             st.caption("🎥 動画 2 (正面)")
                             st.video(r_v2)
@@ -636,8 +625,7 @@ with tab_history:
                                 img_id = extract_drive_id(d_url)
                                 if img_id:
                                     st.markdown(render_drive_image_embed(img_id, title=f"静止画 {idx+1}"), unsafe_allow_html=True)
-                                else:
-                                    st.link_button(f"🔍 静止画 {idx+1} を開く", d_url, use_container_width=True)
+                                st.link_button(f"🔍 静止画 {idx+1} を拡大表示", d_url, use_container_width=True)
 
                 # アップロード静止画
                 if r_imgs:
