@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import os
+import re
 from datetime import datetime, date
 from PIL import Image
 
@@ -16,6 +17,20 @@ if "refresh_key" not in st.session_state:
     st.session_state.refresh_key = 0
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
+
+# Googleドライブの共有リンクから直接表示用URLへ変換するヘルパー関数
+def convert_drive_url_to_direct(url):
+    if not url or "drive.google.com" not in url:
+        return url
+    # ファイルIDの正規表現抽出
+    match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    if not match:
+        match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
+    if match:
+        file_id = match.group(1)
+        # Google UserContent 形式の直接画像リンク
+        return f"https://lh3.googleusercontent.com/d/{file_id}"
+    return url
 
 # データベース初期化・マイグレーション
 def init_db():
@@ -61,6 +76,7 @@ def init_db():
             v1_url TEXT,
             v2_url TEXT,
             coach_name TEXT,
+            drive_images TEXT,
             FOREIGN KEY (student_id) REFERENCES students(id)
         )
     ''')
@@ -80,6 +96,8 @@ def init_db():
         c.execute("ALTER TABLE lessons ADD COLUMN v2_url TEXT")
     if "coach_name" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN coach_name TEXT")
+    if "drive_images" not in existing_cols:
+        c.execute("ALTER TABLE lessons ADD COLUMN drive_images TEXT")
 
     conn.commit()
     conn.close()
@@ -158,7 +176,7 @@ def delete_coach(coach_id):
     conn.close()
 
 # DB操作関数：レッスン記録
-def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url=""):
+def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -169,8 +187,8 @@ def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, i
             down_plane, down_release, 
             video1, video2, images, 
             target_goal, lesson_practice, evaluation_note,
-            v1_url, v2_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            v1_url, v2_url, drive_images
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         student_id, str(lesson_date), coach_name,
         scores["addr_posture"], scores["addr_align"],
@@ -178,12 +196,12 @@ def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, i
         scores["down_plane"], scores["down_release"],
         v1_path, v2_path, ",".join(img_paths), 
         target_goal, lesson_practice, evaluation_note,
-        v1_url, v2_url
+        v1_url, v2_url, drive_images
     ))
     conn.commit()
     conn.close()
 
-def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url=""):
+def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url="", drive_images=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -203,7 +221,8 @@ def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesso
             video2 = ?,
             images = ?,
             v1_url = ?,
-            v2_url = ?
+            v2_url = ?,
+            drive_images = ?
         WHERE id = ?
     ''', (
         str(lesson_date), coach_name,
@@ -212,7 +231,7 @@ def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesso
         scores["down_plane"], scores["down_release"],
         target_goal, lesson_practice, evaluation_note,
         v1_path, v2_path, img_paths_str,
-        v1_url, v2_url, lesson_id
+        v1_url, v2_url, drive_images, lesson_id
     ))
     conn.commit()
     conn.close()
@@ -231,7 +250,7 @@ def get_student_history(student_id):
         SELECT id, lesson_date, addr_posture, addr_align, back_path, back_top, 
                down_plane, down_release, video1, video2, images, 
                target_goal, lesson_practice, evaluation_note,
-               v1_url, v2_url, coach_name
+               v1_url, v2_url, coach_name, drive_images
         FROM lessons 
         WHERE student_id = ? 
         ORDER BY lesson_date DESC, id DESC
@@ -240,7 +259,7 @@ def get_student_history(student_id):
     conn.close()
     return rows
 
-# 1:青, 2:黄, 3:赤 のバッジHTMLを生成する関数（未選択はハイフン）
+# 1:青, 2:黄, 3:赤 のバッジHTMLを生成する関数
 def render_score_badge(score):
     if score is None or score == "":
         return '<span style="color:#aaa; font-size:16px;">-</span>'
@@ -357,10 +376,8 @@ with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expande
             st.warning(f"{coach_to_del} を削除しました。")
             st.rerun()
 
-# ヘッダー情報
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student['hdcp'] or '未設定'} ｜ **長期目標:** {curr_student['goal'] or '未設定'}")
 
-# メイン画面：タブ切り替え
 tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
 
 # ================================
@@ -376,7 +393,7 @@ with tab_new:
         lesson_date = st.date_input("📅 レッスン受講日", value=date.today(), key=f"new_date_{fk}")
     with top_col2:
         coach_options = ["（未選択）"] + coach_list
-        selected_coach_new = st.selectbox("🏌️‍♂️️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
+        selected_coach_new = st.selectbox("🏌️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
         new_coach_val = "" if selected_coach_new == "（未選択）" else selected_coach_new
 
     st.markdown("### ■ スイング3段階チェック (1: 青 / 2: 黄 / 3: 赤)")
@@ -418,14 +435,15 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（Googleフォト共有リンク または 直接ファイル）")
+    st.markdown("### ■ メディア登録（動画・静止画）")
     
-    st.markdown("##### 🔗 Googleフォト 共有リンク（推奨: 容量無制限・高速）")
+    # Googleフォト動画
+    st.markdown("##### 🔗 Googleフォト 動画共有リンク")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("動画 1 のGoogleフォトリンク (例: https://photos.app.goo.gl/...)", value="", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("動画 1 のGoogleフォトリンク", value="", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("動画 2 のGoogleフォトリンク (例: https://photos.app.goo.gl/...)", value="", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("動画 2 のGoogleフォトリンク", value="", key=f"new_v2_url_{fk}")
 
     st.markdown("##### 📁 または動画ファイルを直接アップロード（mp4 / mov）")
     m_col1, m_col2 = st.columns(2)
@@ -434,14 +452,22 @@ with tab_new:
     with m_col2:
         v2_file = st.file_uploader("スイング動画 2（正面など）", type=["mp4", "mov"], key=f"v2_{fk}")
 
-    st.markdown("##### 📷 スイング静止画（最大5枚まで）")
-    img_files = st.file_uploader("静止画（jpg, png）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
+    st.markdown("##### 📷 静止画の挿入（Googleドライブ共有リンク または 直接ファイル）")
+    
+    # Googleドライブ画像リンク入力欄
+    drive_imgs_input = st.text_area(
+        "Googleドライブ 静止画の共有リンク（複数ある場合は改行して貼り付け・最大5枚）",
+        placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
+        key=f"new_drive_imgs_{fk}"
+    )
+    
+    img_files = st.file_uploader("または端末から静止画ファイルを直接アップロード（最大5枚）", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
 
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
     if save_clicked:
         if img_files and len(img_files) > 5:
-            st.error("❌ 保存に失敗しました: 画像は最大5枚までにしてください。")
+            st.error("❌ 保存に失敗しました: アップロード画像は最大5枚までにしてください。")
         else:
             try:
                 v1_path = ""
@@ -473,11 +499,14 @@ with tab_new:
                     "down_release": down_release,
                 }
                 
+                # Googleドライブの改行区切りURLをカンマ区切りで保存
+                drive_imgs_clean = ",".join([line.strip() for line in drive_imgs_input.splitlines() if line.strip()])
+                
                 save_lesson(
                     selected_id, lesson_date, new_coach_val, scores,
                     v1_path, v2_path, img_paths,
                     target_goal, lesson_practice, evaluation_note,
-                    v1_url.strip(), v2_url.strip()
+                    v1_url.strip(), v2_url.strip(), drive_imgs_clean
                 )
                 
                 st.session_state.form_reset_key += 1
@@ -501,14 +530,13 @@ with tab_history:
         st.info("まだ保存されたレッスン記録がありません。")
     else:
         for rec in records:
-            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url, r_coach_name = rec
+            r_id, r_date, r_p, r_a, r_bp, r_bt, r_dp, r_dr, r_v1, r_v2, r_imgs, r_target_goal, r_lesson_practice, r_eval_note, r_v1_url, r_v2_url, r_coach_name, r_drive_imgs = rec
             
             coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
             expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
             edit_expander_title = f"✏️ このレッスン記録の日付・コーチ・内容・メディアを修正する" + ("\u200b" * rf_k)
             
             with st.expander(expander_title, expanded=False):
-                # 担当コーチ表記カード
                 if r_coach_name:
                     st.markdown(f'<div style="background-color:#eef2ff; border-left:4px solid #4f46e5; padding:8px 12px; border-radius:4px; font-weight:bold; color:#312e81; margin-bottom:12px;">🏌️‍♂️ 担当コーチ: {r_coach_name}</div>', unsafe_allow_html=True)
                 else:
@@ -537,7 +565,7 @@ with tab_history:
                     link_col1, link_col2 = st.columns(2)
                     with link_col1:
                         if r_v1_url:
-                            st.link_button("▶️ Googleフォトで動画1を再生", r_v1_url, use_container_width=True)
+                            st.link_button("▶️️ Googleフォトで動画1を再生", r_v1_url, use_container_width=True)
                     with link_col2:
                         if r_v2_url:
                             st.link_button("▶️ Googleフォトで動画2を再生", r_v2_url, use_container_width=True)
@@ -554,10 +582,21 @@ with tab_history:
                             st.caption("🎥 スイング動画 2")
                             st.video(r_v2)
                 
-                # 静止画ギャラリー（最大5枚）
+                # Googleドライブ静止画の表示
+                if r_drive_imgs:
+                    drive_list = [convert_drive_url_to_direct(u.strip()) for u in r_drive_imgs.split(",") if u.strip()]
+                    if drive_list:
+                        st.markdown("##### 📷 Googleドライブ 静止画")
+                        d_cols = st.columns(min(len(drive_list), 5))
+                        for idx, d_url in enumerate(drive_list):
+                            with d_cols[idx]:
+                                st.image(d_url, use_container_width=True, caption=f"ドライブ画像 {idx+1}")
+
+                # アップロード静止画の表示
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
+                        st.markdown("##### 📷 アップロード静止画")
                         img_cols = st.columns(min(len(img_list), 5))
                         for idx, img_p in enumerate(img_list):
                             with img_cols[idx]:
@@ -578,7 +617,6 @@ with tab_history:
                         edit_date = st.date_input("📅 レッスン受講日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
                     with e_top_c2:
                         edit_coach_options = ["（未選択）"] + coach_list
-                        # 既存のコーチがリストにある場合はそれを選択、なければ（未選択）
                         default_coach_idx = edit_coach_options.index(r_coach_name) if r_coach_name in edit_coach_options else 0
                         chosen_coach_edit = st.selectbox("🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
                         edit_coach_val = "" if chosen_coach_edit == "（未選択）" else chosen_coach_edit
@@ -605,28 +643,36 @@ with tab_history:
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
-                    st.markdown("**🔗 Googleフォト共有リンクの変更・追加:**")
+                    st.markdown("**🔗 メディアリンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
                     with ed_u1:
                         edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
                     with ed_u2:
                         edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url or "", key=f"ed_v2_url_{r_id}_{rf_k}")
 
-                    st.markdown("**📁 直接動画ファイルの追加・変更 (未選択時は維持):**")
+                    # 既存のドライブ画像リンクを改行形式に戻して表示
+                    existing_drive_imgs_text = "\n".join((r_drive_imgs or "").split(",")) if r_drive_imgs else ""
+                    edit_drive_imgs_input = st.text_area(
+                        "Googleドライブ 静止画リンク（改行で区切って入力）",
+                        value=existing_drive_imgs_text,
+                        key=f"ed_drive_imgs_{r_id}_{rf_k}"
+                    )
+
+                    st.markdown("**📁 直接ファイルアップロードの変更 (未選択時は維持):**")
                     ed_m1, ed_m2 = st.columns(2)
                     with ed_m1:
-                        ed_v1_file = st.file_uploader(f"動画 1 ファイル (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
+                        ed_v1_file = st.file_uploader(f"動画 1 (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
                     with ed_m2:
-                        ed_v2_file = st.file_uploader(f"動画 2 ファイル (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
+                        ed_v2_file = st.file_uploader(f"動画 2 (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
                     
                     current_img_count = len([p for p in (r_imgs or "").split(",") if p])
-                    ed_img_files = st.file_uploader(f"静止画を追加・差し替え (現在: {current_img_count}枚 / 最大5枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"ed_imgs_{r_id}_{rf_k}")
+                    ed_img_files = st.file_uploader(f"アップロード静止画を追加・差し替え (現在: {current_img_count}枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"ed_imgs_{r_id}_{rf_k}")
 
                     btn_c1, btn_c2 = st.columns([3, 1])
                     with btn_c1:
                         if st.button("💾 日付・修正内容を保存する", key=f"btn_update_{r_id}_{rf_k}", type="primary"):
                             if ed_img_files and len(ed_img_files) > 5:
-                                st.error("❌ 画像は最大5枚までにしてください。")
+                                st.error("❌ アップロード画像は最大5枚までにしてください。")
                             else:
                                 try:
                                     new_v1_path = r_v1 or ""
@@ -659,11 +705,14 @@ with tab_history:
                                         "down_plane": e_dp,
                                         "down_release": e_dr,
                                     }
+                                    
+                                    new_drive_imgs_clean = ",".join([line.strip() for line in edit_drive_imgs_input.splitlines() if line.strip()])
+                                    
                                     update_lesson(
                                         r_id, edit_date, edit_coach_val, updated_scores, 
                                         edit_target_goal, edit_lesson_practice, edit_eval_note, 
                                         new_v1_path, new_v2_path, new_img_paths_str,
-                                        edit_v1_url.strip(), edit_v2_url.strip()
+                                        edit_v1_url.strip(), edit_v2_url.strip(), new_drive_imgs_clean
                                     )
                                     
                                     st.session_state.refresh_key += 1
