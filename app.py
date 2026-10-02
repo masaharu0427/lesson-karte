@@ -18,66 +18,101 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# GoogleドライブURLからファイルIDを抽出する関数
-def extract_drive_id(url):
+# あらゆるGoogleリンク（ドライブ/フォト/短縮URL）からIDを安全に抽出する関数
+def extract_media_id(url):
     if not url:
-        return None
-    match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
-    if not match:
-        match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
-    return match.group(1) if match else None
-
-# Googleドライブ動画埋め込みコンポーネント（確実に再生できるプレビュー）
-def render_drive_video_box(url, title=""):
-    file_id = extract_drive_id(url)
-    if not file_id:
-        return f'<div style="color:red; font-size:12px;">無効なGoogleドライブURLです</div>'
+        return None, "empty"
+    url = url.strip()
     
-    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+    # Googleフォト判定
+    if "photos.app.goo.gl" in url or "photos.google.com" in url:
+        return url, "photos"
     
-    return f"""
-    <div style="margin-bottom: 6px; width: 100%;">
-        <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
-        <div style="
-            width: 100%;
-            height: 380px;
-            background-color: #000;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #333;
-        ">
-            <iframe 
-                src="{preview_url}" 
-                style="width: 100%; height: 100%; border: none;" 
-                allow="autoplay" 
-                allowfullscreen>
-            </iframe>
-        </div>
-    </div>
-    """
+    # Googleドライブ /d/形式
+    match = re.search(r"/d/([a-zA-Z0-9_-]{15,})", url)
+    if match:
+        return match.group(1), "drive"
+    
+    # Googleドライブ id=形式 (open?id=, uc?id= など)
+    match = re.search(r"[?&]id=([a-zA-Z0-9_-]{15,})", url)
+    if match:
+        return match.group(1), "drive"
+        
+    return url, "other"
 
-# 静止画専用の埋め込みコンポーネント
-def render_drive_image_embed(file_id, title=""):
-    preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
-    return f"""
-    <div style="margin-bottom: 6px; width: 100%;">
-        <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
-        <div style="
-            width: 100%;
-            height: 320px;
-            background-color: #111;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #e2e8f0;
-        ">
-            <iframe 
-                src="{preview_url}" 
-                style="width: 100%; height: 100%; border: none;" 
-                allowfullscreen>
-            </iframe>
+# 動画表示コンポーネント（Googleドライブ・Googleフォト両対応）
+def render_video_box(url, title=""):
+    media_val, media_type = extract_media_id(url)
+    
+    if media_type == "drive":
+        preview_url = f"https://drive.google.com/file/d/{media_val}/preview"
+        view_url = f"https://drive.google.com/file/d/{media_val}/view?usp=sharing"
+        return f"""
+        <div style="margin-bottom: 6px; width: 100%;">
+            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
+            <div style="
+                width: 100%;
+                height: 380px;
+                background-color: #000;
+                border-radius: 8px;
+                overflow: hidden;
+                border: 1px solid #333;
+            ">
+                <iframe 
+                    src="{preview_url}" 
+                    style="width: 100%; height: 100%; border: none;" 
+                    allow="autoplay" 
+                    allowfullscreen>
+                </iframe>
+            </div>
         </div>
-    </div>
-    """
+        """, view_url
+    elif media_type == "photos":
+        # Googleフォト用リンク
+        return f"""
+        <div style="margin-bottom: 6px; width: 100%; padding: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>
+            <div style="color: #4b5563; font-size: 13px;">Google フォトのリンクが登録されています。下のボタンから再生してください。</div>
+        </div>
+        """, url
+    else:
+        # その他のURL
+        return f"""
+        <div style="margin-bottom: 6px; width: 100%; padding: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>
+        </div>
+        """, url
+
+# 静止画表示コンポーネント
+def render_image_box(url, title=""):
+    media_val, media_type = extract_media_id(url)
+    if media_type == "drive":
+        preview_url = f"https://drive.google.com/file/d/{media_val}/preview"
+        return f"""
+        <div style="margin-bottom: 6px; width: 100%;">
+            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
+            <div style="
+                width: 100%;
+                height: 320px;
+                background-color: #111;
+                border-radius: 8px;
+                overflow: hidden;
+                border: 1px solid #e2e8f0;
+            ">
+                <iframe 
+                    src="{preview_url}" 
+                    style="width: 100%; height: 100%; border: none;" 
+                    allowfullscreen>
+                </iframe>
+            </div>
+        </div>
+        """
+    else:
+        return f"""
+        <div style="margin-bottom: 6px; width: 100%; padding: 10px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
+        </div>
+        """
 
 # データベース初期化・マイグレーション
 def init_db():
@@ -389,7 +424,7 @@ st.sidebar.header("コーチ管理")
 raw_coaches = get_coaches()
 coach_list = [c[1] for c in raw_coaches]
 
-with st.sidebar.expander("🏌️‍♂️️ コーチの追加・削除", expanded=False):
+with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expanded=False):
     new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
     if st.button("＋ コーチを登録", key="btn_add_coach"):
         if new_coach_name.strip():
@@ -468,16 +503,16 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
+    st.markdown("### ■ メディア登録（クラウド共有リンク または 直接ファイル）")
     
-    st.markdown("##### 📁 Googleドライブ 動画共有リンク")
+    st.markdown("##### 📁 クラウド動画リンク（Googleドライブ / Googleフォト）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("動画 1 共有リンク", value="", placeholder="https://drive.google.com/... または photos.app.goo.gl/...", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("動画 2 共有リンク", value="", placeholder="https://drive.google.com/... または photos.app.goo.gl/...", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📷 Googleドライブ 静止画共有リンク")
+    st.markdown("##### 📷 クラウド静止画リンク（Googleドライブ）")
     drive_imgs_input = st.text_area(
         "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
@@ -598,16 +633,18 @@ with tab_history:
                     
                     with dv_col1:
                         if r_v1_url:
-                            st.markdown(render_drive_video_box(r_v1_url, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
-                            st.link_button("📱 スマホ全画面・クリアに再生 (推奨)", r_v1_url, use_container_width=True)
+                            v1_html, v1_link = render_video_box(r_v1_url, title="🎥 動画 1 (後方)")
+                            st.markdown(v1_html, unsafe_allow_html=True)
+                            st.link_button("📱 スマホ・大画面でクリアに再生", v1_link, use_container_width=True)
                         elif r_v1 and os.path.exists(r_v1):
                             st.caption("🎥 動画 1 (後方)")
                             st.video(r_v1)
                             
                     with dv_col2:
                         if r_v2_url:
-                            st.markdown(render_drive_video_box(r_v2_url, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
-                            st.link_button("📱 スマホ全画面・クリアに再生 (推奨)", r_v2_url, use_container_width=True)
+                            v2_html, v2_link = render_video_box(r_v2_url, title="🎥 動画 2 (正面)")
+                            st.markdown(v2_html, unsafe_allow_html=True)
+                            st.link_button("📱 スマホ・大画面でクリアに再生", v2_link, use_container_width=True)
                         elif r_v2 and os.path.exists(r_v2):
                             st.caption("🎥 動画 2 (正面)")
                             st.video(r_v2)
@@ -622,9 +659,8 @@ with tab_history:
                         for idx, d_url in enumerate(drive_raw_list):
                             col_idx = idx % num_cols
                             with d_cols[col_idx]:
-                                img_id = extract_drive_id(d_url)
-                                if img_id:
-                                    st.markdown(render_drive_image_embed(img_id, title=f"静止画 {idx+1}"), unsafe_allow_html=True)
+                                img_html = render_image_box(d_url, title=f"静止画 {idx+1}")
+                                st.markdown(img_html, unsafe_allow_html=True)
                                 st.link_button(f"🔍 静止画 {idx+1} を拡大表示", d_url, use_container_width=True)
 
                 # アップロード静止画
@@ -682,7 +718,7 @@ with tab_history:
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
-                    st.markdown("**🎬 Googleドライブ動画リンクの変更・追加:**")
+                    st.markdown("**🎬 クラウド動画リンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
                     with ed_u1:
                         edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
