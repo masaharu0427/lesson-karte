@@ -1,16 +1,10 @@
 import streamlit as st
 import sqlite3
-import os
 import re
 from datetime import datetime, date
-from PIL import Image
 
 # ページ基本設定
 st.set_page_config(page_title="ゴルフ スイングチェックカルテ", layout="wide")
-
-# 保存先フォルダの作成
-UPLOAD_DIR = "uploaded_media"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 画面リセット用のセッション管理
 if "refresh_key" not in st.session_state:
@@ -18,107 +12,26 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# あらゆるGoogleリンク（ドライブ/フォト/短縮URL）からIDを安全に抽出する関数
-def extract_media_id(url):
+# GoogleドライブURLを最適なダイレクト閲覧用URLに成形する関数
+def format_drive_view_url(url):
     if not url:
-        return None, "empty"
+        return ""
     url = url.strip()
-    
-    # Googleフォト判定
-    if "photos.app.goo.gl" in url or "photos.google.com" in url:
-        return url, "photos"
-    
-    # Googleドライブ /d/形式
-    match = re.search(r"/d/([a-zA-Z0-9_-]{15,})", url)
+    # ファイルIDの抽出
+    match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    if not match:
+        match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
     if match:
-        return match.group(1), "drive"
-    
-    # Googleドライブ id=形式 (open?id=, uc?id= など)
-    match = re.search(r"[?&]id=([a-zA-Z0-9_-]{15,})", url)
-    if match:
-        return match.group(1), "drive"
-        
-    return url, "other"
-
-# 動画表示コンポーネント（Googleドライブ・Googleフォト両対応）
-def render_video_box(url, title=""):
-    media_val, media_type = extract_media_id(url)
-    
-    if media_type == "drive":
-        preview_url = f"https://drive.google.com/file/d/{media_val}/preview"
-        view_url = f"https://drive.google.com/file/d/{media_val}/view?usp=sharing"
-        return f"""
-        <div style="margin-bottom: 6px; width: 100%;">
-            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
-            <div style="
-                width: 100%;
-                height: 380px;
-                background-color: #000;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid #333;
-            ">
-                <iframe 
-                    src="{preview_url}" 
-                    style="width: 100%; height: 100%; border: none;" 
-                    allow="autoplay" 
-                    allowfullscreen>
-                </iframe>
-            </div>
-        </div>
-        """, view_url
-    elif media_type == "photos":
-        # Googleフォト用リンク
-        return f"""
-        <div style="margin-bottom: 6px; width: 100%; padding: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>
-            <div style="color: #4b5563; font-size: 13px;">Google フォトのリンクが登録されています。下のボタンから再生してください。</div>
-        </div>
-        """, url
-    else:
-        # その他のURL
-        return f"""
-        <div style="margin-bottom: 6px; width: 100%; padding: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>
-        </div>
-        """, url
-
-# 静止画表示コンポーネント
-def render_image_box(url, title=""):
-    media_val, media_type = extract_media_id(url)
-    if media_type == "drive":
-        preview_url = f"https://drive.google.com/file/d/{media_val}/preview"
-        return f"""
-        <div style="margin-bottom: 6px; width: 100%;">
-            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
-            <div style="
-                width: 100%;
-                height: 320px;
-                background-color: #111;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid #e2e8f0;
-            ">
-                <iframe 
-                    src="{preview_url}" 
-                    style="width: 100%; height: 100%; border: none;" 
-                    allowfullscreen>
-                </iframe>
-            </div>
-        </div>
-        """
-    else:
-        return f"""
-        <div style="margin-bottom: 6px; width: 100%; padding: 10px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#333;">{title}</div>
-        </div>
-        """
+        file_id = match.group(1)
+        return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+    return url
 
 # データベース初期化・マイグレーション
 def init_db():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     
+    # 生徒テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +41,7 @@ def init_db():
         )
     ''')
     
+    # コーチテーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS coaches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +49,7 @@ def init_db():
         )
     ''')
     
+    # レッスン記録テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS lessons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +75,7 @@ def init_db():
         )
     ''')
     
+    # カラムのマイグレーション
     c.execute("PRAGMA table_info(lessons)")
     existing_cols = [col[1] for col in c.fetchall()]
     if "target_goal" not in existing_cols:
@@ -182,6 +98,7 @@ def init_db():
 
 init_db()
 
+# DB操作関数：生徒
 def get_students():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -220,6 +137,7 @@ def delete_student(student_id):
     conn.commit()
     conn.close()
 
+# DB操作関数：コーチ
 def get_coaches():
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
@@ -247,7 +165,8 @@ def delete_coach(coach_id):
     conn.commit()
     conn.close()
 
-def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, img_paths, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
+# DB操作関数：レッスン記録
+def save_lesson(student_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -259,20 +178,19 @@ def save_lesson(student_id, lesson_date, coach_name, scores, v1_path, v2_path, i
             video1, video2, images, 
             target_goal, lesson_practice, evaluation_note,
             v1_url, v2_url, drive_images
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, ?, ?)
     ''', (
         student_id, str(lesson_date), coach_name,
         scores["addr_posture"], scores["addr_align"],
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
-        v1_path, v2_path, ",".join(img_paths), 
         target_goal, lesson_practice, evaluation_note,
         v1_url, v2_url, drive_images
     ))
     conn.commit()
     conn.close()
 
-def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_path, v2_path, img_paths_str, v1_url="", v2_url="", drive_images=""):
+def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
     conn = sqlite3.connect("golf_lesson.db")
     c = conn.cursor()
     c.execute('''
@@ -288,9 +206,6 @@ def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesso
             target_goal = ?,
             lesson_practice = ?,
             evaluation_note = ?,
-            video1 = ?,
-            video2 = ?,
-            images = ?,
             v1_url = ?,
             v2_url = ?,
             drive_images = ?
@@ -301,7 +216,6 @@ def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesso
         scores["back_path"], scores["back_top"],
         scores["down_plane"], scores["down_release"],
         target_goal, lesson_practice, evaluation_note,
-        v1_path, v2_path, img_paths_str,
         v1_url, v2_url, drive_images, lesson_id
     ))
     conn.commit()
@@ -373,7 +287,7 @@ def render_text_box(content, box_type="blue"):
 # --- 画面構成 ---
 st.title("⛳ ゴルフレッスン スイングチェックカルテ")
 
-# サイドバー
+# サイドバー：生徒管理 & コーチ管理
 st.sidebar.header("生徒管理")
 raw_students = get_students()
 
@@ -503,83 +417,52 @@ with tab_new:
     evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
 
     st.markdown("---")
-    st.markdown("### ■ メディア登録（クラウド共有リンク または 直接ファイル）")
+    st.markdown("### ■ メディア登録（Google ドライブ共有リンク）")
+    st.caption("※Googleドライブの共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。サーバー容量を消費せず、スマホ全画面で快適に再生できます。")
     
-    st.markdown("##### 📁 クラウド動画リンク（Googleドライブ / Googleフォト）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("動画 1 共有リンク", value="", placeholder="https://drive.google.com/... または photos.app.goo.gl/...", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("🎥 動画 1 共有リンク（後方など）", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("動画 2 共有リンク", value="", placeholder="https://drive.google.com/... または photos.app.goo.gl/...", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("🎥 動画 2 共有リンク（正面など）", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📷 クラウド静止画リンク（Googleドライブ）")
     drive_imgs_input = st.text_area(
-        "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
+        "📷 静止画 共有リンク（スイング写真・弾道データ等。複数ある場合は改行して入力）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
         key=f"new_drive_imgs_{fk}"
     )
 
-    st.markdown("##### 💻 または直接ファイルからアップロード")
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        v1_file = st.file_uploader("スイング動画 1 (mp4/mov)", type=["mp4", "mov"], key=f"v1_{fk}")
-    with m_col2:
-        v2_file = st.file_uploader("スイング動画 2 (mp4/mov)", type=["mp4", "mov"], key=f"v2_{fk}")
-
-    img_files = st.file_uploader("静止画ファイル (jpg/png・最大5枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"imgs_{fk}")
-
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
     if save_clicked:
-        if img_files and len(img_files) > 5:
-            st.error("❌ 保存に失敗しました: 直接アップロード画像は最大5枚までにしてください。")
-        else:
-            try:
-                v1_path = ""
-                if v1_file:
-                    v1_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{lesson_date}_v1_{v1_file.name}")
-                    with open(v1_path, "wb") as f:
-                        f.write(v1_file.getbuffer())
-                        
-                v2_path = ""
-                if v2_file:
-                    v2_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{lesson_date}_v2_{v2_file.name}")
-                    with open(v2_path, "wb") as f:
-                        f.write(v2_file.getbuffer())
+        try:
+            scores = {
+                "addr_posture": addr_posture,
+                "addr_align": addr_align,
+                "back_path": back_path,
+                "back_top": back_top,
+                "down_plane": down_plane,
+                "down_release": down_release,
+            }
+            
+            # ドライブリンクを成形して保存
+            clean_v1 = format_drive_view_url(v1_url)
+            clean_v2 = format_drive_view_url(v2_url)
+            drive_imgs_clean = ",".join([format_drive_view_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
+            
+            save_lesson(
+                selected_id, lesson_date, new_coach_val, scores,
+                target_goal, lesson_practice, evaluation_note,
+                clean_v1, clean_v2, drive_imgs_clean
+            )
+            
+            st.session_state.form_reset_key += 1
+            st.session_state.refresh_key += 1
+            st.success("✅ レッスンカルテを保存しました！")
+            st.rerun()
 
-                img_paths = []
-                if img_files:
-                    for idx, img_f in enumerate(img_files[:5]):
-                        i_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{lesson_date}_img{idx}_{img_f.name}")
-                        with open(i_path, "wb") as f:
-                            f.write(img_f.getbuffer())
-                        img_paths.append(i_path)
-
-                scores = {
-                    "addr_posture": addr_posture,
-                    "addr_align": addr_align,
-                    "back_path": back_path,
-                    "back_top": back_top,
-                    "down_plane": down_plane,
-                    "down_release": down_release,
-                }
-                
-                drive_imgs_clean = ",".join([line.strip() for line in drive_imgs_input.splitlines() if line.strip()])
-                
-                save_lesson(
-                    selected_id, lesson_date, new_coach_val, scores,
-                    v1_path, v2_path, img_paths,
-                    target_goal, lesson_practice, evaluation_note,
-                    v1_url.strip(), v2_url.strip(), drive_imgs_clean
-                )
-                
-                st.session_state.form_reset_key += 1
-                st.session_state.refresh_key += 1
-                st.success("✅ 保存しました")
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"❌ 保存に失敗しました: {e}")
+        except Exception as e:
+            st.error(f"❌ 保存に失敗しました: {e}")
 
 # ================================
 # タブ2: 履歴閲覧・日付変更・編集・削除
@@ -623,60 +506,54 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # スイング動画の再生エリア
-                has_video1 = bool(r_v1_url or (r_v1 and os.path.exists(r_v1)))
-                has_video2 = bool(r_v2_url or (r_v2 and os.path.exists(r_v2)))
+                # --- メディア閲覧カードエリア（1タップ全画面再生） ---
+                has_v1 = bool(r_v1_url)
+                has_v2 = bool(r_v2_url)
+                drive_imgs_list = [u.strip() for u in (r_drive_images or "").split(",") if u.strip()]
 
-                if has_video1 or has_video2:
-                    st.markdown("##### 🎬 スイング動画")
-                    dv_col1, dv_col2 = st.columns(2)
+                if has_v1 or has_v2 or drive_imgs_list:
+                    st.markdown("---")
+                    st.markdown("### 🎬 スイング動画・静止画（タップして全画面再生）")
                     
-                    with dv_col1:
-                        if r_v1_url:
-                            v1_html, v1_link = render_video_box(r_v1_url, title="🎥 動画 1 (後方)")
-                            st.markdown(v1_html, unsafe_allow_html=True)
-                            st.link_button("📱 スマホ・大画面でクリアに再生", v1_link, use_container_width=True)
-                        elif r_v1 and os.path.exists(r_v1):
-                            st.caption("🎥 動画 1 (後方)")
-                            st.video(r_v1)
-                            
-                    with dv_col2:
-                        if r_v2_url:
-                            v2_html, v2_link = render_video_box(r_v2_url, title="🎥 動画 2 (正面)")
-                            st.markdown(v2_html, unsafe_allow_html=True)
-                            st.link_button("📱 スマホ・大画面でクリアに再生", v2_link, use_container_width=True)
-                        elif r_v2 and os.path.exists(r_v2):
-                            st.caption("🎥 動画 2 (正面)")
-                            st.video(r_v2)
+                    # 動画カード
+                    if has_v1 or has_v2:
+                        v_col1, v_col2 = st.columns(2)
+                        with v_col1:
+                            if has_v1:
+                                st.markdown("""
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:16px; text-align:center; margin-bottom:10px;">
+                                    <div style="font-size:24px; margin-bottom:4px;">🎥</div>
+                                    <div style="font-weight:bold; font-size:15px; color:#1e293b; margin-bottom:8px;">スイング動画 1 (後方)</div>
+                                    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">スマホ全画面・スロー/コマ送り再生対応</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.link_button("▶️ 動画1を全画面で再生する", r_v1_url, use_container_width=True, type="primary")
+                        with v_col2:
+                            if has_v2:
+                                st.markdown("""
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:16px; text-align:center; margin-bottom:10px;">
+                                    <div style="font-size:24px; margin-bottom:4px;">🎥</div>
+                                    <div style="font-weight:bold; font-size:15px; color:#1e293b; margin-bottom:8px;">スイング動画 2 (正面)</div>
+                                    <div style="font-size:12px; color:#64748b; margin-bottom:12px;">スマホ全画面・スロー/コマ送り再生対応</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.link_button("▶️ 動画2を全画面で再生する", r_v2_url, use_container_width=True, type="primary")
 
-                # Googleドライブ 静止画
-                if r_drive_imgs:
-                    drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
-                    if drive_raw_list:
-                        st.markdown("##### 📷 Googleドライブ 静止画")
-                        num_cols = min(len(drive_raw_list), 3)
-                        d_cols = st.columns(num_cols)
-                        for idx, d_url in enumerate(drive_raw_list):
-                            col_idx = idx % num_cols
-                            with d_cols[col_idx]:
-                                img_html = render_image_box(d_url, title=f"静止画 {idx+1}")
-                                st.markdown(img_html, unsafe_allow_html=True)
-                                st.link_button(f"🔍 静止画 {idx+1} を拡大表示", d_url, use_container_width=True)
-
-                # アップロード静止画
-                if r_imgs:
-                    img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
-                    if img_list:
-                        st.markdown("##### 📷 アップロード静止画")
-                        img_num_cols = min(len(img_list), 3)
-                        img_cols = st.columns(img_num_cols)
-                        for idx, img_p in enumerate(img_list):
-                            with img_cols[idx % img_num_cols]:
-                                try:
-                                    img = Image.open(img_p)
-                                    st.image(img, use_container_width=True, caption=f"画像 {idx+1}")
-                                except Exception:
-                                    st.caption(f"画像 {idx+1} (読み込み不可)")
+                    # 静止画カード
+                    if drive_imgs_list:
+                        st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+                        st.caption("📷 静止画・弾道解析データ:")
+                        num_img_cols = min(len(drive_imgs_list), 4)
+                        img_cols = st.columns(num_img_cols)
+                        for idx, img_url in enumerate(drive_imgs_list):
+                            with img_cols[idx % num_img_cols]:
+                                st.markdown(f"""
+                                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; text-align:center; margin-bottom:6px;">
+                                    <div style="font-size:20px;">🖼️</div>
+                                    <div style="font-weight:bold; font-size:13px; color:#334155;">静止画 {idx+1}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.link_button(f"🔍 拡大表示", img_url, use_container_width=True)
 
                 st.markdown("---")
                 
@@ -718,7 +595,7 @@ with tab_history:
                     edit_eval_note = st.text_area("📝 評価", value=r_eval_note or "", key=f"ed_eval_{r_id}_{rf_k}")
                     
                     st.markdown("---")
-                    st.markdown("**🎬 クラウド動画リンクの変更・追加:**")
+                    st.markdown("**🎬 Google ドライブ共有リンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
                     with ed_u1:
                         edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url or "", key=f"ed_v1_url_{r_id}_{rf_k}")
@@ -727,73 +604,39 @@ with tab_history:
 
                     existing_drive_imgs_text = "\n".join((r_drive_imgs or "").split(",")) if r_drive_imgs else ""
                     edit_drive_imgs_input = st.text_area(
-                        "📷 Googleドライブ 静止画リンク（改行で区切って入力）",
+                        "📷 静止画リンク（改行で区切って入力）",
                         value=existing_drive_imgs_text,
                         key=f"ed_drive_imgs_{r_id}_{rf_k}"
                     )
 
-                    st.markdown("**💻 直接ファイルアップロードの変更 (未選択時は維持):**")
-                    ed_m1, ed_m2 = st.columns(2)
-                    with ed_m1:
-                        ed_v1_file = st.file_uploader(f"動画 1 (現在: {'登録済' if r_v1 else '未登録'})", type=["mp4", "mov"], key=f"ed_v1_{r_id}_{rf_k}")
-                    with ed_m2:
-                        ed_v2_file = st.file_uploader(f"動画 2 (現在: {'登録済' if r_v2 else '未登録'})", type=["mp4", "mov"], key=f"ed_v2_{r_id}_{rf_k}")
-                    
-                    current_img_count = len([p for p in (r_imgs or "").split(",") if p])
-                    ed_img_files = st.file_uploader(f"アップロード静止画を追加・差し替え (現在: {current_img_count}枚)", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"ed_imgs_{r_id}_{rf_k}")
-
                     btn_c1, btn_c2 = st.columns([3, 1])
                     with btn_c1:
                         if st.button("💾 日付・修正内容を保存する", key=f"btn_update_{r_id}_{rf_k}", type="primary"):
-                            if ed_img_files and len(ed_img_files) > 5:
-                                st.error("❌ アップロード画像は最大5枚までにしてください。")
-                            else:
-                                try:
-                                    new_v1_path = r_v1 or ""
-                                    if ed_v1_file:
-                                        new_v1_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v1_edit_{ed_v1_file.name}")
-                                        with open(new_v1_path, "wb") as f:
-                                            f.write(ed_v1_file.getbuffer())
+                            try:
+                                clean_ed_v1 = format_drive_view_url(edit_v1_url)
+                                clean_ed_v2 = format_drive_view_url(edit_v2_url)
+                                clean_ed_imgs = ",".join([format_drive_view_url(line) for line in edit_drive_imgs_input.splitlines() if line.strip()])
 
-                                    new_v2_path = r_v2 or ""
-                                    if ed_v2_file:
-                                        new_v2_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_v2_edit_{ed_v2_file.name}")
-                                        with open(new_v2_path, "wb") as f:
-                                            f.write(ed_v2_file.getbuffer())
-
-                                    new_img_paths_str = r_imgs or ""
-                                    if ed_img_files:
-                                        new_imgs = []
-                                        for idx, img_f in enumerate(ed_img_files[:5]):
-                                            i_path = os.path.join(UPLOAD_DIR, f"{selected_id}_{edit_date}_img{idx}_edit_{img_f.name}")
-                                            with open(i_path, "wb") as f:
-                                                f.write(img_f.getbuffer())
-                                            new_imgs.append(i_path)
-                                        new_img_paths_str = ",".join(new_imgs)
-
-                                    updated_scores = {
-                                        "addr_posture": e_p,
-                                        "addr_align": e_a,
-                                        "back_path": e_bp,
-                                        "back_top": e_bt,
-                                        "down_plane": e_dp,
-                                        "down_release": e_dr,
-                                    }
-                                    
-                                    new_drive_imgs_clean = ",".join([line.strip() for line in edit_drive_imgs_input.splitlines() if line.strip()])
-                                    
-                                    update_lesson(
-                                        r_id, edit_date, edit_coach_val, updated_scores, 
-                                        edit_target_goal, edit_lesson_practice, edit_eval_note, 
-                                        new_v1_path, new_v2_path, new_img_paths_str,
-                                        edit_v1_url.strip(), edit_v2_url.strip(), new_drive_imgs_clean
-                                    )
-                                    
-                                    st.session_state.refresh_key += 1
-                                    st.toast("✅ レッスン内容を更新しました！")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ 更新に失敗しました: {e}")
+                                updated_scores = {
+                                    "addr_posture": e_p,
+                                    "addr_align": e_a,
+                                    "back_path": e_bp,
+                                    "back_top": e_bt,
+                                    "down_plane": e_dp,
+                                    "down_release": e_dr,
+                                }
+                                
+                                update_lesson(
+                                    r_id, edit_date, edit_coach_val, updated_scores, 
+                                    edit_target_goal, edit_lesson_practice, edit_eval_note, 
+                                    clean_ed_v1, clean_ed_v2, clean_ed_imgs
+                                )
+                                
+                                st.session_state.refresh_key += 1
+                                st.toast("✅ レッスン内容を更新しました！")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ 更新に失敗しました: {e}")
                     with btn_c2:
                         confirm_delete = st.checkbox("削除確認", key=f"chk_del_{r_id}_{rf_k}")
                         if st.button("🗑️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
