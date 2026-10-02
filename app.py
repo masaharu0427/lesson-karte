@@ -27,20 +27,50 @@ def extract_drive_id(url):
         match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
-# Googleドライブの埋め込みプレビュー用HTMLコンポーネント（動画・静止画共通）
-def render_drive_embed(file_id, height="320px", title=""):
+# オリジナル縦横比を崩さずに綺麗に表示する埋め込みコンポーネント
+def render_drive_embed(file_id, is_video=True, title=""):
     preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+    
+    if is_video:
+        # 動画：縦撮りスイング(9:16)・横撮り(16:9)のどちらでも崩れない高さ・コンテナ設定
+        container_style = """
+            width: 100%;
+            height: 480px;
+            background-color: #050505;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        """
+        iframe_style = "width: 100%; height: 100%; border: none;"
+    else:
+        # 静止画：スイング解析写真・弾道データ画像向け
+        container_style = """
+            width: 100%;
+            height: 360px;
+            background-color: #111;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        """
+        iframe_style = "width: 100%; height: 100%; border: none;"
+    
     return f"""
-    <div style="margin-bottom: 8px;">
-        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:4px; color:#444;">{title}</div>' if title else ''}
-        <iframe 
-            src="{preview_url}" 
-            width="100%" 
-            height="{height}" 
-            allow="autoplay" 
-            style="border: 1px solid #ddd; border-radius: 8px; background-color: #000;" 
-            allowfullscreen>
-        </iframe>
+    <div style="margin-bottom: 12px; width: 100%;">
+        {f'<div style="font-size:13px; font-weight:bold; margin-bottom:6px; color:#333;">{title}</div>' if title else ''}
+        <div style="{container_style}">
+            <iframe 
+                src="{preview_url}" 
+                style="{iframe_style}" 
+                allow="autoplay" 
+                allowfullscreen>
+            </iframe>
+        </div>
     </div>
     """
 
@@ -369,7 +399,7 @@ with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expande
         st.caption("登録済みコーチの削除:")
         coach_to_del = st.selectbox("削除するコーチを選択", options=[c[1] for c in raw_coaches], key="coach_to_del_select")
         del_coach_id = [c[0] for c in raw_coaches if c[1] == coach_to_del][0]
-        if st.button(f"🗑️️ {coach_to_del} を削除", key="btn_del_coach"):
+        if st.button(f"🗑️ {coach_to_del} を削除", key="btn_del_coach"):
             delete_coach(del_coach_id)
             st.warning(f"{coach_to_del} を削除しました。")
             st.rerun()
@@ -435,14 +465,14 @@ with tab_new:
     st.markdown("---")
     st.markdown("### ■ メディア登録（Googleドライブリンク または 直接ファイル）")
     
-    st.markdown("##### 📁 Googleドライブ 動画共有リンク（画面内で直接再生されます）")
+    st.markdown("##### 📁 Googleドライブ 動画共有リンク（オリジナル比率で直接再生）")
     u_col1, u_col2 = st.columns(2)
     with u_col1:
         v1_url = st.text_input("動画 1 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v1_url_{fk}")
     with u_col2:
         v2_url = st.text_input("動画 2 共有リンク (例: https://drive.google.com/file/d/.../view)", value="", key=f"new_v2_url_{fk}")
 
-    st.markdown("##### 📷 Googleドライブ 静止画共有リンク（画面内に直接表示されます）")
+    st.markdown("##### 📷 Googleドライブ 静止画共有リンク（オリジナル比率で直接表示）")
     drive_imgs_input = st.text_area(
         "静止画リンク（複数ある場合は改行して貼り付け・最大5枚）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
@@ -553,7 +583,7 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # Googleドライブ 動画（画面内で直接再生）
+                # Googleドライブ 動画（オリジナル比率でインライン直接再生）
                 if r_v1_url or r_v2_url:
                     st.markdown("##### 🎬 スイング動画 (Googleドライブ直接再生)")
                     dv_col1, dv_col2 = st.columns(2)
@@ -561,18 +591,18 @@ with tab_history:
                         if r_v1_url:
                             v1_id = extract_drive_id(r_v1_url)
                             if v1_id:
-                                st.markdown(render_drive_embed(v1_id, height="320px", title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
+                                st.markdown(render_drive_embed(v1_id, is_video=True, title="🎥 動画 1 (後方)"), unsafe_allow_html=True)
                             else:
                                 st.link_button("▶️ 動画1を開く", r_v1_url)
                     with dv_col2:
                         if r_v2_url:
                             v2_id = extract_drive_id(r_v2_url)
                             if v2_id:
-                                st.markdown(render_drive_embed(v2_id, height="320px", title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
+                                st.markdown(render_drive_embed(v2_id, is_video=True, title="🎥 動画 2 (正面)"), unsafe_allow_html=True)
                             else:
                                 st.link_button("▶️ 動画2を開く", r_v2_url)
 
-                # アップロード動画の再生
+                # アップロード動画の再生（オリジナル縦横比を維持）
                 if (r_v1 and os.path.exists(r_v1)) or (r_v2 and os.path.exists(r_v2)):
                     st.markdown("##### 🎥 アップロード動画")
                     v_col1, v_col2 = st.columns(2)
@@ -585,29 +615,31 @@ with tab_history:
                             st.caption("動画 2")
                             st.video(r_v2)
                 
-                # Googleドライブ 静止画（画面内に直接プレビュー表示）
+                # Googleドライブ 静止画（オリジナル比率で直接プレビュー）
                 if r_drive_imgs:
                     drive_raw_list = [u.strip() for u in r_drive_imgs.split(",") if u.strip()]
                     if drive_raw_list:
                         st.markdown("##### 📷 Googleドライブ 静止画")
-                        d_cols = st.columns(min(len(drive_raw_list), 4))
+                        num_cols = min(len(drive_raw_list), 3)
+                        d_cols = st.columns(num_cols)
                         for idx, d_url in enumerate(drive_raw_list):
-                            col_idx = idx % 4
+                            col_idx = idx % num_cols
                             with d_cols[col_idx]:
                                 img_id = extract_drive_id(d_url)
                                 if img_id:
-                                    st.markdown(render_drive_embed(img_id, height="260px", title=f"静止画 {idx+1}"), unsafe_allow_html=True)
+                                    st.markdown(render_drive_embed(img_id, is_video=False, title=f"静止画 {idx+1}"), unsafe_allow_html=True)
                                 else:
                                     st.link_button(f"🔍 静止画 {idx+1} を開く", d_url, use_container_width=True)
 
-                # アップロード静止画の表示
+                # アップロード静止画の表示（オリジナル比率を保持）
                 if r_imgs:
                     img_list = [p for p in r_imgs.split(",") if p and os.path.exists(p)]
                     if img_list:
                         st.markdown("##### 📷 アップロード静止画")
-                        img_cols = st.columns(min(len(img_list), 5))
+                        img_num_cols = min(len(img_list), 3)
+                        img_cols = st.columns(img_num_cols)
                         for idx, img_p in enumerate(img_list):
-                            with img_cols[idx]:
+                            with img_cols[idx % img_num_cols]:
                                 try:
                                     img = Image.open(img_p)
                                     st.image(img, use_container_width=True, caption=f"画像 {idx+1}")
