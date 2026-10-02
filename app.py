@@ -3,6 +3,7 @@ import sqlite3
 import os
 import re
 from datetime import datetime, date
+from urllib.parse import urlsplit, parse_qs, urlencode
 
 # ページ基本設定
 st.set_page_config(page_title="ゴルフ スイングチェックカルテ", layout="wide")
@@ -29,14 +30,40 @@ def get_drive_file_id(url):
         match = re.search(r"[?&]id=([a-zA-Z0-9_-]{15,})", url)
     return match.group(1) if match else None
 
-# GoogleドライブURLの整形（クリーンなURLで保存）
+# Googleドライブの閲覧・プレビューURL（Android / iPhone / PC共通）
+def drive_playback_url(url, preview=False):
+    fid = get_drive_file_id(url)
+    if not fid:
+        return (url or "").strip()
+    mode = "preview" if preview else "view"
+    params = {} if preview else {"usp": "sharing"}
+    # アクセスに必要なresourcekeyがある共有リンクでは削除しない。
+    resource_key = parse_qs(urlsplit(url.strip()).query).get("resourcekey", [""])[0]
+    if resource_key:
+        params["resourcekey"] = resource_key
+    query = urlencode(params)
+    return f"https://drive.google.com/file/d/{fid}/{mode}" + (f"?{query}" if query else "")
+
+# GoogleドライブURLの整形
 def clean_drive_url(url):
     if not url:
         return ""
-    fid = get_drive_file_id(url)
-    if fid:
-        return f"https://drive.google.com/file/d/{fid}/view?usp=sharing"
-    return url.strip()
+    return drive_playback_url(url)
+
+# 独自のアプリ用スキームに依存しない再生ボタン
+def render_video_links(url, number):
+    st.link_button(
+        f"▶️ 動画{number}を開く（Googleドライブ）",
+        drive_playback_url(url),
+        use_container_width=True,
+        type="primary",
+    )
+    if get_drive_file_id(url):
+        st.link_button(
+            "🌐 ブラウザ用プレビューを開く",
+            drive_playback_url(url, preview=True),
+            use_container_width=True,
+        )
 
 # データベース初期化・マイグレーション
 def init_db():
@@ -511,9 +538,7 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # --- iPhone対応 動画・静止画 再生カード ---
-                fid1 = get_drive_file_id(r_v1_url)
-                fid2 = get_drive_file_id(r_v2_url)
+                # --- Android / iPhone / PC共通 動画・静止画 再生カード ---
                 has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
                 has_v2 = bool(r_v2_url and r_v2_url.startswith("http"))
                 drive_imgs_list = [u.strip() for u in r_drive_images.split(",") if u.strip() and u.strip().startswith("http")]
@@ -535,15 +560,8 @@ with tab_history:
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
-                                # iPhoneアプリ直通URL（Googleドライブアプリが入っていれば最優先）
-                                if fid1:
-                                    app_url = f"googledrive://drive.google.com/file/d/{fid1}/view"
-                                    web_url = f"https://drive.google.com/file/d/{fid1}/preview"
-                                    st.link_button("📲 ドライブアプリで再生 (推奨)", app_url, use_container_width=True, type="primary")
-                                    st.link_button("🌐 Safari / ブラウザで再生", web_url, use_container_width=True)
-                                else:
-                                    st.link_button("▶️ 動画1を開く", r_v1_url, use_container_width=True, type="primary")
-                                    
+                                render_video_links(r_v1_url, 1)
+
                         # 動画2
                         with v_col2:
                             if has_v2:
@@ -554,13 +572,10 @@ with tab_history:
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
-                                if fid2:
-                                    app_url2 = f"googledrive://drive.google.com/file/d/{fid2}/view"
-                                    web_url2 = f"https://drive.google.com/file/d/{fid2}/preview"
-                                    st.link_button("📲 ドライブアプリで再生 (推奨)", app_url2, use_container_width=True, type="primary")
-                                    st.link_button("🌐 Safari / ブラウザで再生", web_url2, use_container_width=True)
-                                else:
-                                    st.link_button("▶️ 動画2を開く", r_v2_url, use_container_width=True, type="primary")
+                                render_video_links(r_v2_url, 2)
+
+                    if has_v1 or has_v2:
+                        st.caption("動画が開かない場合は、共有権限とGoogleドライブ側の動画処理状況を確認してください。")
 
                     # 静止画
                     if drive_imgs_list:
@@ -578,7 +593,7 @@ with tab_history:
                                 """, unsafe_allow_html=True)
                                 img_fid = get_drive_file_id(img_url)
                                 if img_fid:
-                                    clean_img_url = f"https://drive.google.com/file/d/{img_fid}/view?usp=sharing"
+                                    clean_img_url = clean_drive_url(img_url)
                                     st.link_button("🔍 拡大表示", clean_img_url, use_container_width=True)
                                 else:
                                     st.link_button("🔍 拡大表示", img_url, use_container_width=True)
