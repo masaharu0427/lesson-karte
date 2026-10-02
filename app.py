@@ -13,30 +13,36 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# DB接続ヘルパー（カラム名で安全にアクセスできるRowファクトリ設定）
+# DB接続ヘルパー
 def get_db_connection():
     conn = sqlite3.connect("golf_lesson.db")
     conn.row_factory = sqlite3.Row
     return conn
 
-# GoogleドライブURLの整形（空文字や不要な空白を除去）
+# GoogleドライブのファイルID抽出
+def get_drive_file_id(url):
+    if not url:
+        return None
+    url = url.strip()
+    match = re.search(r"/d/([a-zA-Z0-9_-]{15,})", url)
+    if not match:
+        match = re.search(r"[?&]id=([a-zA-Z0-9_-]{15,})", url)
+    return match.group(1) if match else None
+
+# GoogleドライブURLの整形（クリーンなURLで保存）
 def clean_drive_url(url):
     if not url:
         return ""
-    url = url.strip()
-    match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
-    if not match:
-        match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
-    if match:
-        return f"https://drive.google.com/file/d/{match.group(1)}/view?usp=sharing"
-    return url
+    fid = get_drive_file_id(url)
+    if fid:
+        return f"https://drive.google.com/file/d/{fid}/view?usp=sharing"
+    return url.strip()
 
 # データベース初期化・マイグレーション
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # 生徒テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +52,6 @@ def init_db():
         )
     ''')
     
-    # コーチテーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS coaches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +59,6 @@ def init_db():
         )
     ''')
     
-    # レッスン記録テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS lessons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +84,6 @@ def init_db():
         )
     ''')
     
-    # カラムの自動追加
     c.execute("PRAGMA table_info(lessons)")
     existing_cols = [col["name"] for col in c.fetchall()]
     if "target_goal" not in existing_cols:
@@ -231,7 +234,6 @@ def delete_lesson(lesson_id):
     conn.commit()
     conn.close()
 
-# 辞書型（名前指定）で取得することで列順ズレを防止
 def get_student_history(student_id):
     conn = get_db_connection()
     c = conn.cursor()
@@ -371,7 +373,7 @@ with tab_new:
         lesson_date = st.date_input("📅 レッスン受講日", value=date.today(), key=f"new_date_{fk}")
     with top_col2:
         coach_options = ["（未選択）"] + coach_list
-        selected_coach_new = st.selectbox("🏌️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
+        selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
         new_coach_val = "" if selected_coach_new == "（未選択）" else selected_coach_new
 
     st.markdown("### ■ スイング3段階チェック (1: 青 / 2: 黄 / 3: 赤)")
@@ -414,7 +416,7 @@ with tab_new:
 
     st.markdown("---")
     st.markdown("### ■ Google ドライブ共有リンク登録")
-    st.caption("※共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。1タップで端末の全画面高画質ビューが起動します。")
+    st.caption("※共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。")
     
     u_col1, u_col2 = st.columns(2)
     with u_col1:
@@ -509,38 +511,58 @@ with tab_history:
                 st.markdown("**📝 評価:**")
                 st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
                 
-                # --- 動画・静止画 1タップ全画面再生カード ---
+                # --- iPhone対応 動画・静止画 再生カード ---
+                fid1 = get_drive_file_id(r_v1_url)
+                fid2 = get_drive_file_id(r_v2_url)
                 has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
                 has_v2 = bool(r_v2_url and r_v2_url.startswith("http"))
                 drive_imgs_list = [u.strip() for u in r_drive_images.split(",") if u.strip() and u.strip().startswith("http")]
 
                 if has_v1 or has_v2 or drive_imgs_list:
                     st.markdown("---")
-                    st.markdown("### 🎬 スイング動画・静止画（タップで全画面再生）")
+                    st.markdown("### 🎬 スイング動画・静止画")
                     
                     if has_v1 or has_v2:
                         v_col1, v_col2 = st.columns(2)
+                        
+                        # 動画1
                         with v_col1:
                             if has_v1:
                                 st.markdown("""
-                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:14px; text-align:center; margin-bottom:8px;">
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">動画 1 (後方)</div>
-                                    <div style="font-size:12px; color:#64748b;">全画面・スロー/コマ送り対応</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 1 (後方)</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.link_button("▶️ 動画1を全画面で再生", r_v1_url, use_container_width=True, type="primary")
+                                
+                                # iPhoneアプリ直通URL（Googleドライブアプリが入っていれば最優先）
+                                if fid1:
+                                    app_url = f"googledrive://drive.google.com/file/d/{fid1}/view"
+                                    web_url = f"https://drive.google.com/file/d/{fid1}/preview"
+                                    st.link_button("📲 ドライブアプリで再生 (推奨)", app_url, use_container_width=True, type="primary")
+                                    st.link_button("🌐 Safari / ブラウザで再生", web_url, use_container_width=True)
+                                else:
+                                    st.link_button("▶️ 動画1を開く", r_v1_url, use_container_width=True, type="primary")
+                                    
+                        # 動画2
                         with v_col2:
                             if has_v2:
                                 st.markdown("""
-                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:14px; text-align:center; margin-bottom:8px;">
+                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">動画 2 (正面)</div>
-                                    <div style="font-size:12px; color:#64748b;">全画面・スロー/コマ送り対応</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 2 (正面)</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.link_button("▶️ 動画2を全画面で再生", r_v2_url, use_container_width=True, type="primary")
+                                
+                                if fid2:
+                                    app_url2 = f"googledrive://drive.google.com/file/d/{fid2}/view"
+                                    web_url2 = f"https://drive.google.com/file/d/{fid2}/preview"
+                                    st.link_button("📲 ドライブアプリで再生 (推奨)", app_url2, use_container_width=True, type="primary")
+                                    st.link_button("🌐 Safari / ブラウザで再生", web_url2, use_container_width=True)
+                                else:
+                                    st.link_button("▶️ 動画2を開く", r_v2_url, use_container_width=True, type="primary")
 
+                    # 静止画
                     if drive_imgs_list:
                         st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
                         st.caption("📷 静止画・解析データ:")
@@ -554,7 +576,12 @@ with tab_history:
                                     <div style="font-weight:bold; font-size:13px; color:#334155;">静止画 {idx+1}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.link_button(f"🔍 拡大表示", img_url, use_container_width=True)
+                                img_fid = get_drive_file_id(img_url)
+                                if img_fid:
+                                    clean_img_url = f"https://drive.google.com/file/d/{img_fid}/view?usp=sharing"
+                                    st.link_button("🔍 拡大表示", clean_img_url, use_container_width=True)
+                                else:
+                                    st.link_button("🔍 拡大表示", img_url, use_container_width=True)
 
                 st.markdown("---")
                 
@@ -603,7 +630,7 @@ with tab_history:
                     with ed_u2:
                         edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url, key=f"ed_v2_url_{r_id}_{rf_k}")
 
-                    existing_drive_imgs_text = "\n".join((r_drive_images).split(",")) if r_drive_images else ""
+                    existing_drive_imgs_text = "\n".join(r_drive_images.split(",")) if r_drive_images else ""
                     edit_drive_imgs_input = st.text_area(
                         "📷 静止画リンク（改行で区切って入力）",
                         value=existing_drive_imgs_text,
@@ -640,7 +667,7 @@ with tab_history:
                                 st.error(f"❌ 更新に失敗しました: {e}")
                     with btn_c2:
                         confirm_delete = st.checkbox("削除確認", key=f"chk_del_{r_id}_{rf_k}")
-                        if st.button("🗑️️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
+                        if st.button("🗑️ レッスンを完全削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
                             try:
                                 delete_lesson(r_id)
                                 st.session_state.refresh_key += 1
