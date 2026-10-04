@@ -556,7 +556,7 @@ with tab_history:
                                 st.markdown("""
                                 <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 1 (後方)</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 1 </div>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
@@ -568,7 +568,7 @@ with tab_history:
                                 st.markdown("""
                                 <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 2 (正面)</div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 2 </div>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
@@ -631,7 +631,7 @@ with tab_history:
                     st.markdown("**レッスンカルテ内容の修正:**")
                     ed_col1, ed_col2 = st.columns(2)
                     with ed_col1:
-                        edit_target_goal = st.text_area("📌 取り組んでいる課題・目標", value=r_target_goal, key=f"ed_goal_{r_id}_{rf_k}")
+                        edit_target_goal = st.text_area("📌 現在の課題・目標", value=r_target_goal, key=f"ed_goal_{r_id}_{rf_k}")
                     with ed_col2:
                         edit_lesson_practice = st.text_area("🏌️ 今回のレッスン・練習", value=r_lesson_practice, key=f"ed_practice_{r_id}_{rf_k}")
                     
