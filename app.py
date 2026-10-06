@@ -128,6 +128,10 @@ def init_db():
     if "drive_images" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN drive_images TEXT")
 
+    for column in ("previous_issues", "previous_check_date", "previous_address", "previous_backswing", "previous_downswing", "current_address", "current_backswing", "current_downswing"):
+        if column not in existing_cols:
+            c.execute(f"ALTER TABLE lessons ADD COLUMN {column} TEXT")
+
     conn.commit()
     conn.close()
 
@@ -201,60 +205,48 @@ def delete_coach(coach_id):
     finally:
         conn.close()
 
-def save_lesson(student_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
+def save_lesson(student_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing=""):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO lessons (
-            student_id, lesson_date, coach_name,
-            addr_posture, addr_align, 
-            back_path, back_top, 
-            down_plane, down_release, 
-            video1, video2, images, 
-            target_goal, lesson_practice, evaluation_note,
-            v1_url, v2_url, drive_images
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, ?, ?)
-    ''', (
-        student_id, str(lesson_date), coach_name,
-        scores["addr_posture"], scores["addr_align"],
-        scores["back_path"], scores["back_top"],
-        scores["down_plane"], scores["down_release"],
-        target_goal, lesson_practice, evaluation_note,
-        v1_url, v2_url, drive_images
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        with conn:
+            conn.execute("""
+                INSERT INTO lessons (
+                    student_id, lesson_date, coach_name,
+                    target_goal, lesson_practice, evaluation_note,
+                    v1_url, v2_url, drive_images,
+                    previous_issues, previous_check_date,
+                    previous_address, previous_backswing, previous_downswing,
+                    current_address, current_backswing, current_downswing
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (student_id, str(lesson_date), coach_name,
+                  target_goal, lesson_practice, evaluation_note,
+                  v1_url, v2_url, drive_images, previous_issues,
+                  str(previous_check_date) if previous_check_date else "",
+                  previous_address, previous_backswing, previous_downswing,
+                  current_address, current_backswing, current_downswing))
+    finally:
+        conn.close()
 
-def update_lesson(lesson_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
+def update_lesson(lesson_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing=""):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        UPDATE lessons 
-        SET lesson_date = ?,
-            coach_name = ?,
-            addr_posture = ?,
-            addr_align = ?,
-            back_path = ?,
-            back_top = ?,
-            down_plane = ?,
-            down_release = ?,
-            target_goal = ?,
-            lesson_practice = ?,
-            evaluation_note = ?,
-            v1_url = ?,
-            v2_url = ?,
-            drive_images = ?
-        WHERE id = ?
-    ''', (
-        str(lesson_date), coach_name,
-        scores["addr_posture"], scores["addr_align"],
-        scores["back_path"], scores["back_top"],
-        scores["down_plane"], scores["down_release"],
-        target_goal, lesson_practice, evaluation_note,
-        v1_url, v2_url, drive_images, lesson_id
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE lessons SET lesson_date = ?, coach_name = ?,
+                    target_goal = ?, lesson_practice = ?, evaluation_note = ?,
+                    v1_url = ?, v2_url = ?, drive_images = ?,
+                    previous_issues = ?, previous_check_date = ?,
+                    previous_address = ?, previous_backswing = ?, previous_downswing = ?,
+                    current_address = ?, current_backswing = ?, current_downswing = ?
+                WHERE id = ?
+            """, (str(lesson_date), coach_name,
+                  target_goal, lesson_practice, evaluation_note,
+                  v1_url, v2_url, drive_images, previous_issues,
+                  str(previous_check_date) if previous_check_date else "",
+                  previous_address, previous_backswing, previous_downswing,
+                  current_address, current_backswing, current_downswing, lesson_id))
+    finally:
+        conn.close()
 
 def delete_lesson(lesson_id):
     conn = get_db_connection()
@@ -271,21 +263,37 @@ def get_student_history(student_id):
     conn.close()
     return rows
 
-def render_score_badge(score):
-    if score is None or score == "":
-        return '<span style="color:#aaa; font-size:16px;">-</span>'
-    if score == 1:
-        color = "#0066cc"
-        bg = "#e6f0fa"
-    elif score == 2:
-        color = "#d9822b"
-        bg = "#fdf6e2"
-    elif score == 3:
-        color = "#cc0000"
-        bg = "#fae6e6"
-    else:
-        return '<span style="color:#aaa; font-size:16px;">-</span>'
-    return f'<span style="background-color:{bg}; color:{color}; font-weight:bold; font-size:18px; padding:3px 12px; border-radius:6px; border:1px solid {color};">{score}</span>'
+def get_previous_lesson(student_id, lesson_date, lesson_id=None):
+    # 日付順。同日では、編集中の記録より前に登録された記録だけを参照。
+    for record in get_student_history(student_id):
+        if record["lesson_date"] < str(lesson_date) or (
+            record["lesson_date"] == str(lesson_date)
+            and (lesson_id is None or record["id"] < lesson_id)
+        ):
+            return record
+    return None
+
+def previous_issue_value(record, phase):
+    if not record:
+        return ""
+    value = record.get(f"current_{phase}")
+    if value is not None:
+        return value
+    return record.get(f"previous_{phase}") or ""
+
+def carry_previous_issue(widget_key, source_key):
+    # クリック時点の前回欄を読む。保存前の編集内容もそのまま引き継ぐ。
+    content = st.session_state.get(source_key, "")
+    if not content.strip():
+        st.session_state["carry_notice"] = "引き継ぐ前回の内容がありません。前回の課題・問題点の欄に記入してから押してください。"
+        return
+    st.session_state[widget_key] = content
+
+def parse_optional_date(value):
+    try:
+        return date.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
 
 def render_text_box(content, box_type="blue"):
     if not content or not str(content).strip():
@@ -313,6 +321,8 @@ def render_text_box(content, box_type="blue"):
 
 # --- 画面構成 ---
 st.title("スイング・チェックシート")
+if "carry_notice" in st.session_state:
+    st.info(st.session_state.pop("carry_notice"))
 if "management_notice" in st.session_state:
     st.success(st.session_state.pop("management_notice"))
 
@@ -410,7 +420,7 @@ tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "�
 with tab_new:
     st.subheader(f"{selected_name} 様 - レッスンチェック新規入力")
     
-    fk = st.session_state.form_reset_key
+    fk = f"{selected_id}_{st.session_state.form_reset_key}"
     
     top_col1, top_col2 = st.columns(2)
     with top_col1:
@@ -420,43 +430,87 @@ with tab_new:
         selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
         new_coach_val = "" if selected_coach_new == "（未選択）" else selected_coach_new
 
-    st.markdown("### ■ スイング3段階チェック (1: 青 / 2: 黄 / 3: 赤)")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("#### 【アドレス】")
-        addr_posture = st.radio("前傾・ポスチャー", [1, 2, 3], index=None, horizontal=True, key=f"new_p1_{fk}")
-        st.markdown(f"現在値: {render_score_badge(addr_posture)}", unsafe_allow_html=True)
-        
-        addr_align = st.radio("アライメント（肩・足の向き）", [1, 2, 3], index=None, horizontal=True, key=f"new_p2_{fk}")
-        st.markdown(f"現在値: {render_score_badge(addr_align)}", unsafe_allow_html=True)
+    previous = get_previous_lesson(selected_id, lesson_date)
+    previous_key = f"{selected_id}_{fk}_{lesson_date}_{previous['id'] if previous else 0}_{st.session_state.refresh_key}"
+    st.markdown("### ■ 前回の課題・問題点")
+    previous_check_date = st.date_input(
+        "📅 直前のレッスン（チェック日）",
+        value=parse_optional_date(previous["lesson_date"]) if previous else None,
+        key=f"new_previous_date_{previous_key}",
+    )
+    previous_issues = ""
+    previous_address = st.text_area(
+        "アドレス", value=previous_issue_value(previous, "address"),
+        placeholder="アドレスの課題・問題点を記入",
+        key=f"new_previous_address_{previous_key}",
+    )
+    previous_backswing = st.text_area(
+        "バックスイング", value=previous_issue_value(previous, "backswing"),
+        placeholder="バックスイングの課題・問題点を記入",
+        key=f"new_previous_backswing_{previous_key}",
+    )
+    previous_downswing = st.text_area(
+        "ダウンスイング", value=previous_issue_value(previous, "downswing"),
+        placeholder="ダウンスイングの課題・問題点を記入",
+        key=f"new_previous_downswing_{previous_key}",
+    )
+    if previous:
+        st.caption("直前のレッスンで記入した問題点を表示しています。必要に応じて書き直せます。")
 
-    with col2:
-        st.markdown("#### 【バックスイング】")
-        back_path = st.radio("テイクバック軌道", [1, 2, 3], horizontal=True, index=None, key=f"new_p3_{fk}")
-        st.markdown(f"現在値: {render_score_badge(back_path)}", unsafe_allow_html=True)
-        
-        back_top = st.radio("トップポジション（手元・フェース）", [1, 2, 3], index=None, horizontal=True, key=f"new_p4_{fk}")
-        st.markdown(f"現在値: {render_score_badge(back_top)}", unsafe_allow_html=True)
-
-    with col3:
-        st.markdown("#### 【ダウンスイング】")
-        down_plane = st.radio("スイングプレーン", [1, 2, 3], index=None, horizontal=True, key=f"new_p5_{fk}")
-        st.markdown(f"現在値: {render_score_badge(down_plane)}", unsafe_allow_html=True)
-        
-        down_release = st.radio("インパクト・リリース", [1, 2, 3], index=None, horizontal=True, key=f"new_p6_{fk}")
-        st.markdown(f"現在値: {render_score_badge(down_release)}", unsafe_allow_html=True)
+    if not previous:
+        st.caption("直前のレッスン記録がないため、空欄から記入できます。")
 
     st.markdown("---")
-    st.markdown("### ■ レッスン記録・カルテ詳細")
-    
-    in_col1, in_col2 = st.columns(2)
-    with in_col1:
-        target_goal = st.text_area("📌 取り組んでいる課題・目標", value="", placeholder="例:\n・スライス改善\n・トップでのフェース開き防止", key=f"new_target_goal_{fk}")
-    with in_col2:
-        lesson_practice = st.text_area("🏌️ 今回のレッスン・練習", value="", placeholder="例:\n・ハーフスイングドリル\n・手首のコック維持練習", key=f"new_lesson_practice_{fk}")
-    
-    evaluation_note = st.text_area("📝 評価", value="", placeholder="例:\n・手元の浮きが解消され始めた\n・次回はフォローの抜けを確認", key=f"new_evaluation_note_{fk}")
+    st.markdown("### ■ 今回の練習内容")
+    lesson_practice = st.text_area(
+        "今回の練習内容", placeholder="今回行った練習やドリルを記入してください。",
+        key=f"new_lesson_practice_{fk}",
+    )
+    target_goal = ""
+    evaluation_note = ""
+    st.markdown("### ■ 今回の課題・問題点")
+    current_address_key = f"new_current_address_{previous_key}"
+    issue_col, carry_col = st.columns([4, 1])
+    with issue_col:
+        current_address = st.text_area(
+            "アドレス", placeholder="今回のアドレスの課題・問題点を記入",
+            key=current_address_key,
+        )
+    with carry_col:
+        st.button(
+            "前回の内容を引き継ぐ", key=f"carry_address_{previous_key}",
+            type="primary",
+            on_click=carry_previous_issue,
+            args=(current_address_key, f"new_previous_address_{previous_key}"),
+        )
+    current_backswing_key = f"new_current_backswing_{previous_key}"
+    issue_col, carry_col = st.columns([4, 1])
+    with issue_col:
+        current_backswing = st.text_area(
+            "バックスイング", placeholder="今回のバックスイングの課題・問題点を記入",
+            key=current_backswing_key,
+        )
+    with carry_col:
+        st.button(
+            "前回の内容を引き継ぐ", key=f"carry_backswing_{previous_key}",
+            type="primary",
+            on_click=carry_previous_issue,
+            args=(current_backswing_key, f"new_previous_backswing_{previous_key}"),
+        )
+    current_downswing_key = f"new_current_downswing_{previous_key}"
+    issue_col, carry_col = st.columns([4, 1])
+    with issue_col:
+        current_downswing = st.text_area(
+            "ダウンスイング", placeholder="今回のダウンスイングの課題・問題点を記入",
+            key=current_downswing_key,
+        )
+    with carry_col:
+        st.button(
+            "前回の内容を引き継ぐ", key=f"carry_downswing_{previous_key}",
+            type="primary",
+            on_click=carry_previous_issue,
+            args=(current_downswing_key, f"new_previous_downswing_{previous_key}"),
+        )
 
     st.markdown("---")
     st.markdown("### ■ Google ドライブ共有リンク登録")
@@ -478,23 +532,16 @@ with tab_new:
 
     if save_clicked:
         try:
-            scores = {
-                "addr_posture": addr_posture,
-                "addr_align": addr_align,
-                "back_path": back_path,
-                "back_top": back_top,
-                "down_plane": down_plane,
-                "down_release": down_release,
-            }
-            
             clean_v1 = clean_drive_url(v1_url)
             clean_v2 = clean_drive_url(v2_url)
             drive_imgs_clean = ",".join([clean_drive_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
             
             save_lesson(
-                selected_id, lesson_date, new_coach_val, scores,
+                selected_id, lesson_date, new_coach_val,
                 target_goal, lesson_practice, evaluation_note,
-                clean_v1, clean_v2, drive_imgs_clean
+                clean_v1, clean_v2, drive_imgs_clean, previous_issues, previous_check_date,
+                previous_address, previous_backswing, previous_downswing,
+                current_address, current_backswing, current_downswing
             )
             
             st.session_state.form_reset_key += 1
@@ -538,23 +585,35 @@ with tab_history:
                 else:
                     st.markdown('<div style="color:#888; font-size:13px; margin-bottom:8px;">🏌️‍♂️ 担当コーチ: （未指定）</div>', unsafe_allow_html=True)
 
-                st.markdown(f"""
-                | アドレス: 姿勢 | アドレス: 向き | バック: 軌道 | バック: トップ | ダウン: プレーン | ダウン: リリース |
-                | :---: | :---: | :---: | :---: | :---: | :---: |
-                | {render_score_badge(rec.get("addr_posture"))} | {render_score_badge(rec.get("addr_align"))} | {render_score_badge(rec.get("back_path"))} | {render_score_badge(rec.get("back_top"))} | {render_score_badge(rec.get("down_plane"))} | {render_score_badge(rec.get("down_release"))} |
-                """, unsafe_allow_html=True)
-                
-                t_col1, t_col2 = st.columns(2)
-                with t_col1:
-                    st.markdown("**📌 取り組んでいる課題・目標:**")
-                    st.markdown(render_text_box(r_target_goal, "blue"), unsafe_allow_html=True)
-                with t_col2:
-                    st.markdown("**🏌️ 今回のレッスン・練習:**")
-                    st.markdown(render_text_box(r_lesson_practice, "blue"), unsafe_allow_html=True)
-                
-                st.markdown("**📝 評価:**")
-                st.markdown(render_text_box(r_eval_note, "green"), unsafe_allow_html=True)
-                
+                previous = get_previous_lesson(selected_id, r_date, r_id)
+                r_previous_issues = rec.get("previous_issues")
+                r_previous_date = rec.get("previous_check_date")
+                # 変更前の記録では、直前のレッスンから初期値を補う。
+                if r_previous_issues is None:
+                    r_previous_issues = (previous.get("target_goal") or "") if previous else ""
+                if r_previous_date is None:
+                    r_previous_date = previous["lesson_date"] if previous else ""
+                st.markdown("**📌 前回の課題・問題点:**")
+                st.caption(f"直前のレッスン（チェック日）：{r_previous_date or '未記入'}")
+                for label, field in (
+                    ("アドレス", "previous_address"),
+                    ("バックスイング", "previous_backswing"),
+                    ("ダウンスイング", "previous_downswing"),
+                ):
+                    st.markdown(f"**{label}**")
+                    st.markdown(render_text_box(rec.get(field) or "", "blue"), unsafe_allow_html=True)
+
+                st.markdown("### ■ 今回の練習内容")
+                st.markdown(render_text_box(r_lesson_practice, "blue"), unsafe_allow_html=True)
+                st.markdown("### ■ 今回の課題・問題点")
+                for label, field in (
+                    ("アドレス", "current_address"),
+                    ("バックスイング", "current_backswing"),
+                    ("ダウンスイング", "current_downswing"),
+                ):
+                    st.markdown(f"**{label}**")
+                    st.markdown(render_text_box(rec.get(field) or "", "blue"), unsafe_allow_html=True)
+
                 # --- Android / iPhone / PC共通 動画・静止画 再生カード ---
                 has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
                 has_v2 = bool(r_v2_url and r_v2_url.startswith("http"))
@@ -633,27 +692,75 @@ with tab_history:
                         chosen_coach_edit = st.selectbox("🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
                         edit_coach_val = "" if chosen_coach_edit == "（未選択）" else chosen_coach_edit
                     
-                    st.markdown("**評価スコアの修正:**")
-                    ec1, ec2, ec3 = st.columns(3)
-                    with ec1:
-                        e_p = st.radio("アドレス: 姿勢", [1, 2, 3], index=[1, 2, 3].index(rec.get("addr_posture")) if rec.get("addr_posture") in [1, 2, 3] else None, horizontal=True, key=f"e_p_{r_id}_{rf_k}")
-                        e_a = st.radio("アドレス: 向き", [1, 2, 3], index=[1, 2, 3].index(rec.get("addr_align")) if rec.get("addr_align") in [1, 2, 3] else None, horizontal=True, key=f"e_a_{r_id}_{rf_k}")
-                    with ec2:
-                        e_bp = st.radio("バック: 軌道", [1, 2, 3], index=[1, 2, 3].index(rec.get("back_path")) if rec.get("back_path") in [1, 2, 3] else None, horizontal=True, key=f"e_bp_{r_id}_{rf_k}")
-                        e_bt = st.radio("バック: トップ", [1, 2, 3], index=[1, 2, 3].index(rec.get("back_top")) if rec.get("back_top") in [1, 2, 3] else None, horizontal=True, key=f"e_bt_{r_id}_{rf_k}")
-                    with ec3:
-                        e_dp = st.radio("ダウン: プレーン", [1, 2, 3], index=[1, 2, 3].index(rec.get("down_plane")) if rec.get("down_plane") in [1, 2, 3] else None, horizontal=True, key=f"e_dp_{r_id}_{rf_k}")
-                        e_dr = st.radio("ダウン: リリース", [1, 2, 3], index=[1, 2, 3].index(rec.get("down_release")) if rec.get("down_release") in [1, 2, 3] else None, horizontal=True, key=f"e_dr_{r_id}_{rf_k}")
-                    
-                    st.markdown("**レッスンカルテ内容の修正:**")
-                    ed_col1, ed_col2 = st.columns(2)
-                    with ed_col1:
-                        edit_target_goal = st.text_area("📌 現在の課題・目標", value=r_target_goal, key=f"ed_goal_{r_id}_{rf_k}")
-                    with ed_col2:
-                        edit_lesson_practice = st.text_area("🏌️ 今回のレッスン・練習", value=r_lesson_practice, key=f"ed_practice_{r_id}_{rf_k}")
-                    
-                    edit_eval_note = st.text_area("📝 評価", value=r_eval_note, key=f"ed_eval_{r_id}_{rf_k}")
-                    
+                    edit_previous_date = st.date_input(
+                        "📅 直前のレッスン（チェック日）",
+                        value=parse_optional_date(r_previous_date),
+                        key=f"ed_previous_date_{r_id}_{rf_k}",
+                    )
+                    edit_previous_issues = r_previous_issues
+                    edit_previous_address = st.text_area(
+                        "アドレス", value=rec.get("previous_address") or "",
+                        key=f"ed_previous_address_{r_id}_{rf_k}",
+                    )
+                    edit_previous_backswing = st.text_area(
+                        "バックスイング", value=rec.get("previous_backswing") or "",
+                        key=f"ed_previous_backswing_{r_id}_{rf_k}",
+                    )
+                    edit_previous_downswing = st.text_area(
+                        "ダウンスイング", value=rec.get("previous_downswing") or "",
+                        key=f"ed_previous_downswing_{r_id}_{rf_k}",
+                    )
+                    st.markdown("### ■ 今回の練習内容")
+                    edit_lesson_practice = st.text_area(
+                        "今回の練習内容", value=r_lesson_practice,
+                        key=f"ed_practice_{r_id}_{rf_k}",
+                    )
+                    edit_target_goal = r_target_goal
+                    edit_eval_note = r_eval_note
+                    st.markdown("### ■ 今回の課題・問題点")
+                    edit_current_address_key = f"ed_current_address_{r_id}_{rf_k}"
+                    issue_col, carry_col = st.columns([4, 1])
+                    with issue_col:
+                        edit_current_address = st.text_area(
+                            "アドレス", value=rec.get("current_address") or "",
+                            key=edit_current_address_key,
+                        )
+                    with carry_col:
+                        st.button(
+                            "前回の内容を引き継ぐ", key=f"ed_carry_address_{r_id}_{rf_k}",
+                            type="primary",
+                            on_click=carry_previous_issue,
+                            args=(edit_current_address_key, f"ed_previous_address_{r_id}_{rf_k}"),
+                        )
+                    edit_current_backswing_key = f"ed_current_backswing_{r_id}_{rf_k}"
+                    issue_col, carry_col = st.columns([4, 1])
+                    with issue_col:
+                        edit_current_backswing = st.text_area(
+                            "バックスイング", value=rec.get("current_backswing") or "",
+                            key=edit_current_backswing_key,
+                        )
+                    with carry_col:
+                        st.button(
+                            "前回の内容を引き継ぐ", key=f"ed_carry_backswing_{r_id}_{rf_k}",
+                            type="primary",
+                            on_click=carry_previous_issue,
+                            args=(edit_current_backswing_key, f"ed_previous_backswing_{r_id}_{rf_k}"),
+                        )
+                    edit_current_downswing_key = f"ed_current_downswing_{r_id}_{rf_k}"
+                    issue_col, carry_col = st.columns([4, 1])
+                    with issue_col:
+                        edit_current_downswing = st.text_area(
+                            "ダウンスイング", value=rec.get("current_downswing") or "",
+                            key=edit_current_downswing_key,
+                        )
+                    with carry_col:
+                        st.button(
+                            "前回の内容を引き継ぐ", key=f"ed_carry_downswing_{r_id}_{rf_k}",
+                            type="primary",
+                            on_click=carry_previous_issue,
+                            args=(edit_current_downswing_key, f"ed_previous_downswing_{r_id}_{rf_k}"),
+                        )
+
                     st.markdown("---")
                     st.markdown("**🎬 Google ドライブ共有リンクの変更・追加:**")
                     ed_u1, ed_u2 = st.columns(2)
@@ -677,19 +784,12 @@ with tab_history:
                                 clean_ed_v2 = clean_drive_url(edit_v2_url)
                                 clean_ed_imgs = ",".join([clean_drive_url(line) for line in edit_drive_imgs_input.splitlines() if line.strip()])
 
-                                updated_scores = {
-                                    "addr_posture": e_p,
-                                    "addr_align": e_a,
-                                    "back_path": e_bp,
-                                    "back_top": e_bt,
-                                    "down_plane": e_dp,
-                                    "down_release": e_dr,
-                                }
-                                
                                 update_lesson(
-                                    r_id, edit_date, edit_coach_val, updated_scores, 
+                                    r_id, edit_date, edit_coach_val, 
                                     edit_target_goal, edit_lesson_practice, edit_eval_note, 
-                                    clean_ed_v1, clean_ed_v2, clean_ed_imgs
+                                    clean_ed_v1, clean_ed_v2, clean_ed_imgs, edit_previous_issues, edit_previous_date,
+                                    edit_previous_address, edit_previous_backswing, edit_previous_downswing,
+                                    edit_current_address, edit_current_backswing, edit_current_downswing
                                 )
                                 
                                 st.session_state.refresh_key += 1
