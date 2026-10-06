@@ -1,4 +1,6 @@
 import streamlit as st
+import streamlit.components.v1 as components
+from html import escape
 import sqlite3
 import os
 import re
@@ -79,6 +81,67 @@ def clean_drive_url(url):
         return ""
     return drive_playback_url(url)
 
+def render_fullscreen_preview(url, title, height=380):
+    if not get_drive_file_id(url):
+        return
+    preview_url = escape(drive_playback_url(url, preview=True), quote=True)
+    safe_title = escape(title, quote=True)
+    # Streamlitのコンポーネント内で、ユーザーのクリックから全画面表示を要求する。
+    markup = """
+    <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: sans-serif; }
+    #viewer { background: #111; width: 100%; height: __HEIGHT__px; }
+    #viewer:fullscreen { width: 100vw; height: 100vh; }
+    #viewer:-webkit-full-screen { width: 100vw; height: 100vh; }
+    #toolbar { height: 46px; display: flex; align-items: center; padding: 5px 8px; gap: 8px; }
+    button { background: #0066cc; color: white; border: 1px solid #0066cc;
+             border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 14px; }
+    #message { color: white; font-size: 12px; }
+    iframe { width: 100%; height: calc(100% - 46px); border: 0; display: block; background: white; }
+    </style>
+    <div id="viewer">
+      <div id="toolbar">
+        <button id="full" type="button">⛶ 全画面で見る</button>
+        <span id="message" role="status"></span>
+      </div>
+      <iframe src="__URL__" title="__TITLE__"
+        allow="fullscreen; autoplay; encrypted-media; picture-in-picture"
+        allowfullscreen webkitallowfullscreen></iframe>
+    </div>
+    <script>
+    const viewer = document.getElementById('viewer');
+    const button = document.getElementById('full');
+    const message = document.getElementById('message');
+    function syncButton() {
+      button.textContent = (document.fullscreenElement || document.webkitFullscreenElement)
+        ? '⛶ 全画面を終了' : '⛶ 全画面で見る';
+    }
+    button.addEventListener('click', async () => {
+      message.textContent = '';
+      try {
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+          const exit = document.exitFullscreen || document.webkitExitFullscreen;
+          if (!exit) throw new Error('unsupported');
+          await exit.call(document);
+        } else {
+          const enter = viewer.requestFullscreen || viewer.webkitRequestFullscreen;
+          if (!enter) throw new Error('unsupported');
+          await enter.call(viewer);
+        }
+        syncButton();
+      } catch (error) {
+        message.textContent = 'このブラウザでは全画面にできません。ドライブを直接開いてください。';
+      }
+    });
+    document.addEventListener('fullscreenchange', syncButton);
+    document.addEventListener('webkitfullscreenchange', syncButton);
+    </script>
+    """
+    markup = markup.replace("__HEIGHT__", str(height))
+    markup = markup.replace("__TITLE__", safe_title).replace("__URL__", preview_url)
+    components.html(markup, height=height + 4, scrolling=False)
+
 # 独自のアプリ用スキームに依存しない再生ボタン
 def render_video_links(url, number):
     st.link_button(
@@ -88,6 +151,7 @@ def render_video_links(url, number):
         type="primary",
     )
     if get_drive_file_id(url):
+        render_fullscreen_preview(url, f"スイング動画 {number}")
         st.link_button(
             "🌐 ブラウザ用プレビューを開く",
             drive_playback_url(url, preview=True),
@@ -761,6 +825,7 @@ with tab_history:
                                 zoom_url = clean_drive_url(img_url) if img_fid else img_url
                                 with st.container(key=f"image_zoom_{r_id}_{idx}"):
                                     st.link_button("🔍 拡大表示", zoom_url, use_container_width=True, type="primary")
+                                render_fullscreen_preview(img_url, f"静止画 {idx + 1}", height=300)
 
                 st.markdown("---")
                 
