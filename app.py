@@ -144,17 +144,17 @@ def render_fullscreen_preview(url, title, height=380):
 
 # 独自のアプリ用スキームに依存しない再生ボタン
 def render_video_links(url, number):
+    # iPhoneでは埋め込み枠の全画面化を使わず、再生ページを直接開く。
     st.link_button(
-        f"▶️ 動画{number}を開く（Googleドライブ）",
-        drive_playback_url(url),
+        f"▶️ 動画{number}を再生（ブラウザ）",
+        drive_playback_url(url, preview=True),
         use_container_width=True,
         type="primary",
     )
     if get_drive_file_id(url):
-        render_fullscreen_preview(url, f"スイング動画 {number}")
         st.link_button(
-            "🌐 ブラウザ用プレビューを開く",
-            drive_playback_url(url, preview=True),
+            "Googleドライブで開く",
+            drive_playback_url(url),
             use_container_width=True,
         )
 
