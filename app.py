@@ -8,6 +8,35 @@ from urllib.parse import urlsplit, parse_qs, urlencode
 # ページ基本設定
 st.set_page_config(page_title="スイング・チェックシート", layout="wide")
 
+# 課題・問題点は赤、練習内容は紺（新規入力・履歴編集共通）。
+st.markdown("""
+<style>
+textarea[aria-label="アドレス"],
+textarea[aria-label="バックスイング"],
+textarea[aria-label="ダウンスイング"] {
+    color: #cc0000 !important;
+    -webkit-text-fill-color: #cc0000 !important;
+}
+textarea[aria-label="今回の練習内容"] {
+    color: #000080 !important;
+    -webkit-text-fill-color: #000080 !important;
+}
+[class*="st-key-image_zoom_"] a {
+    background-color: #0066cc !important;
+    border: 1px solid #0066cc !important;
+    color: #ffffff !important;
+}
+[class*="st-key-image_zoom_"] a p {
+    color: #ffffff !important;
+}
+[class*="st-key-image_zoom_"] a:hover {
+    background-color: #0052a3 !important;
+    border-color: #0052a3 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # 画面リセット用のセッション管理
 if "refresh_key" not in st.session_state:
     st.session_state.refresh_key = 0
@@ -148,13 +177,36 @@ def get_students():
 
 def add_student(name, handicap, goal):
     conn = get_db_connection()
-    c = conn.cursor()
     try:
-        c.execute("INSERT INTO students (name, handicap, goal) VALUES (?, ?, ?)", (name, handicap, goal))
-        conn.commit()
+        with conn:
+            conn.execute("INSERT INTO students (name, handicap, goal) VALUES (?, ?, ?)", (name, handicap, goal))
+        return True
     except sqlite3.IntegrityError:
-        pass
-    conn.close()
+        return False
+    finally:
+        conn.close()
+
+def register_student_from_form():
+    name = st.session_state.get("new_s_name", "").strip()
+    if not name:
+        st.session_state["student_registration_error"] = "生徒名を入力してください。"
+        return
+    try:
+        success = add_student(
+            name,
+            st.session_state.get("new_s_hdcp", "").strip(),
+            st.session_state.get("new_s_goal", "").strip(),
+        )
+    except sqlite3.Error as error:
+        st.session_state["student_registration_error"] = f"登録に失敗しました: {error}"
+        return
+    if not success:
+        st.session_state["student_registration_error"] = "同じ名前の生徒が既に登録されています。"
+        return
+    for key in ("new_s_name", "new_s_hdcp", "new_s_goal"):
+        st.session_state[key] = ""
+    st.session_state.pop("student_registration_error", None)
+    st.session_state["management_notice"] = f"{name} 様を登録しました。"
 
 def update_student(student_id, name, handicap, goal):
     conn = get_db_connection()
@@ -167,6 +219,27 @@ def update_student(student_id, name, handicap, goal):
         success = False
     conn.close()
     return success
+
+def update_student_from_form(student_id):
+    keys = (f"s_name_{student_id}", f"s_hdcp_{student_id}", f"s_goal_{student_id}")
+    name, handicap, goal = (st.session_state.get(key, "").strip() for key in keys)
+    if not name:
+        st.session_state["profile_update_error"] = "氏名を入力してください。"
+        return
+    try:
+        success = update_student(student_id, name, handicap, goal)
+    except sqlite3.Error as error:
+        st.session_state["profile_update_error"] = f"更新に失敗しました: {error}"
+        return
+    if not success:
+        st.session_state["profile_update_error"] = "同姓同名の生徒が既に存在します。別の名前を指定してください。"
+        return
+    for key in keys:
+        st.session_state[key] = ""
+    st.session_state["selected_student_name_blank"] = name
+    st.session_state["refresh_key"] += 1
+    st.session_state.pop("profile_update_error", None)
+    st.session_state["management_notice"] = "プロフィールを更新しました。"
 
 def delete_student(student_id):
     conn = get_db_connection()
@@ -295,9 +368,11 @@ def parse_optional_date(value):
     except (TypeError, ValueError):
         return None
 
-def render_text_box(content, box_type="blue"):
+def render_text_box(content, box_type="blue", text_color="#222", empty_label="（未記入）"):
     if not content or not str(content).strip():
-        return '<div style="color: #888; font-style: italic; padding: 8px;">（未記入）</div>'
+        if empty_label:
+            return f'<div style="color: #888; font-style: italic; padding: 8px;">{empty_label}</div>'
+        content = ""
     
     if box_type == "blue":
         bg_color = "#f0f7ff"
@@ -314,7 +389,8 @@ def render_text_box(content, box_type="blue"):
         white-space: pre-wrap;
         line-height: 1.6;
         font-size: 15px;
-        color: #222;
+        min-height: 24px;
+        color: {text_color};
         margin-top: 6px;
         margin-bottom: 12px;
     ">{content}</div>'''
@@ -329,11 +405,13 @@ if "management_notice" in st.session_state:
 # サイドバー
 raw_students = get_students()
 student_dict = {s["name"]: s for s in raw_students}
-if raw_students:
-    selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_dict.keys()))
-else:
-    st.sidebar.selectbox("受講者を選択", options=["生徒を登録してください"], disabled=True)
-    selected_name = None
+student_options = [""] + list(student_dict.keys())
+if st.session_state.get("selected_student_name_blank", "") not in student_options:
+    st.session_state["selected_student_name_blank"] = ""
+selected_name = st.sidebar.selectbox(
+    "受講者を選択", options=student_options, index=0,
+    key="selected_student_name_blank", disabled=not raw_students,
+)
 
 st.sidebar.markdown("---")
 st.sidebar.header("生徒管理")
@@ -342,18 +420,52 @@ with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
     new_s_name = st.text_input("生徒名", key="new_s_name")
     new_s_hdcp = st.text_input("現在のハンデ/平均スコア", key="new_s_hdcp")
     new_s_goal = st.text_input("長期目標", key="new_s_goal")
-    if st.button("登録する", key="btn_add_student"):
-        if new_s_name.strip():
-            add_student(new_s_name.strip(), new_s_hdcp.strip(), new_s_goal.strip())
-            st.success(f"{new_s_name} 様を登録しました")
-            st.rerun()
+    st.button("登録する", key="btn_add_student", on_click=register_student_from_form)
+    if "student_registration_error" in st.session_state:
+        st.error(st.session_state.pop("student_registration_error"))
+
+if selected_name:
+    curr_student = student_dict[selected_name]
+    selected_id = curr_student["id"]
+
+    with st.sidebar.expander("👤 生徒プロフィールを編集", expanded=False):
+        for key, initial in (
+            (f"s_name_{selected_id}", selected_name),
+            (f"s_hdcp_{selected_id}", curr_student.get("handicap") or ""),
+            (f"s_goal_{selected_id}", curr_student.get("goal") or ""),
+        ):
+            if key not in st.session_state:
+                st.session_state[key] = initial
+        edit_s_name = st.text_input("氏名", key=f"s_name_{selected_id}")
+        edit_s_hdcp = st.text_input("ハンデ / 平均スコア", key=f"s_hdcp_{selected_id}")
+        edit_s_goal = st.text_input("長期目標", key=f"s_goal_{selected_id}")
+        st.button(
+            "💾 プロフィールを更新", type="primary", key=f"btn_up_s_{selected_id}",
+            on_click=update_student_from_form, args=(selected_id,),
+        )
+        if "profile_update_error" in st.session_state:
+            st.error(st.session_state.pop("profile_update_error"))
+
+        st.markdown("---")
+        st.markdown("### 🗑️ 生徒を削除")
+        st.write(f"削除対象：{selected_name} 様")
+        st.caption("この生徒のプロフィールと全レッスン履歴を削除します。元に戻せません。")
+        del_s_chk = st.checkbox("この生徒と全レッスン履歴を削除することを確認", key=f"del_s_chk_{selected_id}")
+        if st.button("🗑️ 選択した生徒を削除", key=f"btn_del_s_{selected_id}", disabled=not del_s_chk):
+            try:
+                delete_student(selected_id)
+                st.session_state.refresh_key += 1
+                st.session_state.management_notice = f"{selected_name} 様と全レッスン履歴を削除しました。"
+                st.rerun()
+            except sqlite3.Error as e:
+                st.error(f"生徒の削除に失敗しました: {e}")
 
 st.sidebar.markdown("---")
-st.sidebar.header("コーチ管理")
 raw_coaches = get_coaches()
 coach_list = [c["name"] for c in raw_coaches]
 
-with st.sidebar.expander("＋ コーチを登録", expanded=False):
+with st.sidebar.expander("コーチ管理", expanded=False):
+    st.markdown("### ＋ コーチを登録")
     new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
     if st.button("＋ コーチを登録", key="btn_add_coach"):
         if new_coach_name.strip():
@@ -363,7 +475,8 @@ with st.sidebar.expander("＋ コーチを登録", expanded=False):
             else:
                 st.error("同じ名前のコーチが既に登録されています。")
 
-with st.sidebar.expander("🗑️ コーチを削除", expanded=True):
+    st.markdown("---")
+    st.markdown("### 🗑️ コーチを削除")
     if raw_coaches:
         coach_to_del = st.selectbox("削除するコーチを選択", options=coach_list, key="coach_to_del_select")
         del_coach_id = next(c["id"] for c in raw_coaches if c["name"] == coach_to_del)
@@ -380,40 +493,9 @@ with st.sidebar.expander("🗑️ コーチを削除", expanded=True):
     else:
         st.info("登録済みのコーチはいません。")
 
-if not raw_students:
-    st.info("サイドバーから生徒を登録してください。")
+if not selected_name:
+    st.tabs(["📝 新規スイングチェック入力", "📂 過去カルテ・日付変更・編集"])
     st.stop()
-
-curr_student = student_dict[selected_name]
-selected_id = curr_student["id"]
-
-with st.sidebar.expander("👤 生徒プロフィールを編集", expanded=False):
-    edit_s_name = st.text_input("氏名", value=selected_name, key=f"s_name_{selected_id}")
-    edit_s_hdcp = st.text_input("ハンデ / 平均スコア", value=curr_student.get("handicap") or "", key=f"s_hdcp_{selected_id}")
-    edit_s_goal = st.text_input("長期目標", value=curr_student.get("goal") or "", key=f"s_goal_{selected_id}")
-    
-    if st.button("💾 プロフィールを更新", type="primary", key=f"btn_up_s_{selected_id}"):
-        if edit_s_name.strip():
-            if update_student(selected_id, edit_s_name.strip(), edit_s_hdcp.strip(), edit_s_goal.strip()):
-                st.session_state.refresh_key += 1
-                st.toast("✅ プロフィールを更新しました！")
-                st.rerun()
-            else:
-                st.error("同姓同名の生徒が既に存在します。別の名前を指定してください。")
-                
-with st.sidebar.expander("🗑️ 生徒を削除", expanded=True):
-    st.write(f"削除対象：{selected_name} 様")
-    st.caption("この生徒のプロフィールと全レッスン履歴を削除します。元に戻せません。")
-    del_s_chk = st.checkbox("この生徒と全レッスン履歴を削除することを確認", key=f"del_s_chk_{selected_id}")
-    if st.button("🗑️ 選択した生徒を削除", key=f"btn_del_s_{selected_id}", disabled=not del_s_chk):
-        try:
-            delete_student(selected_id)
-            st.session_state.refresh_key += 1
-            st.session_state.management_notice = f"{selected_name} 様と全レッスン履歴を削除しました。"
-            st.rerun()
-        except sqlite3.Error as e:
-            st.error(f"生徒の削除に失敗しました: {e}")
-
 
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student.get('handicap') or '未設定'} ｜ **長期目標:** {curr_student.get('goal') or '未設定'}")
 
@@ -435,7 +517,11 @@ with tab_new:
         selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
         new_coach_val = selected_coach_new
 
-    previous = get_previous_lesson(selected_id, lesson_date) if lesson_date else None
+    if lesson_date:
+        previous = get_previous_lesson(selected_id, lesson_date)
+    else:
+        student_history = get_student_history(selected_id)
+        previous = student_history[0] if student_history else None
     previous_key = f"{selected_id}_{fk}_{lesson_date}_{previous['id'] if previous else 0}_{st.session_state.refresh_key}"
     st.markdown("### ■ 前回の課題・問題点")
     previous_check_date = st.date_input(
@@ -446,25 +532,20 @@ with tab_new:
     previous_issues = ""
     previous_address = st.text_area(
         "アドレス", value=previous_issue_value(previous, "address"),
-        placeholder="アドレスの課題・問題点を記入",
         key=f"new_previous_address_{previous_key}",
     )
     previous_backswing = st.text_area(
         "バックスイング", value=previous_issue_value(previous, "backswing"),
-        placeholder="バックスイングの課題・問題点を記入",
         key=f"new_previous_backswing_{previous_key}",
     )
     previous_downswing = st.text_area(
         "ダウンスイング", value=previous_issue_value(previous, "downswing"),
-        placeholder="ダウンスイングの課題・問題点を記入",
         key=f"new_previous_downswing_{previous_key}",
     )
     if previous:
         st.caption("直前のレッスンで記入した問題点を表示しています。必要に応じて書き直せます。")
 
-    if not lesson_date:
-        st.caption("レッスン受講日を選択すると、前回の記録が表示されます。")
-    elif not previous:
+    if not previous:
         st.caption("直前のレッスン記録がないため、空欄から記入できます。")
 
     st.markdown("---")
@@ -480,7 +561,7 @@ with tab_new:
     issue_col, carry_col = st.columns([4, 1])
     with issue_col:
         current_address = st.text_area(
-            "アドレス", placeholder="今回のアドレスの課題・問題点を記入",
+            "アドレス",
             key=current_address_key,
         )
     with carry_col:
@@ -494,7 +575,7 @@ with tab_new:
     issue_col, carry_col = st.columns([4, 1])
     with issue_col:
         current_backswing = st.text_area(
-            "バックスイング", placeholder="今回のバックスイングの課題・問題点を記入",
+            "バックスイング",
             key=current_backswing_key,
         )
     with carry_col:
@@ -508,7 +589,7 @@ with tab_new:
     issue_col, carry_col = st.columns([4, 1])
     with issue_col:
         current_downswing = st.text_area(
-            "ダウンスイング", placeholder="今回のダウンスイングの課題・問題点を記入",
+            "ダウンスイング",
             key=current_downswing_key,
         )
     with carry_col:
@@ -525,9 +606,9 @@ with tab_new:
     
     u_col1, u_col2 = st.columns(2)
     with u_col1:
-        v1_url = st.text_input("🎥 動画 1 共有リンク（後方など）", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v1_url_{fk}")
+        v1_url = st.text_input("🎥 動画 1 共有リンク", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v1_url_{fk}")
     with u_col2:
-        v2_url = st.text_input("🎥 動画 2 共有リンク（正面など）", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v2_url_{fk}")
+        v2_url = st.text_input("🎥 動画 2 共有リンク", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v2_url_{fk}")
 
     drive_imgs_input = st.text_area(
         "📷 静止画 共有リンク（複数ある場合は改行して入力）",
@@ -586,9 +667,9 @@ with tab_history:
             
             coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
             expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
-            edit_expander_title = f"✏️ このレッスン記録の日付・コーチ・内容・メディアを修正する" + ("\u200b" * rf_k)
+            edit_expander_title = f"✏️ この練習記録の内容を編集する" + ("\u200b" * rf_k)
             
-            with st.expander(expander_title, expanded=False):
+            with st.expander(expander_title, expanded=(r_id == records[0]["id"])):
                 if r_coach_name:
                     st.markdown(f'<div style="background-color:#eef2ff; border-left:4px solid #4f46e5; padding:8px 12px; border-radius:4px; font-weight:bold; color:#312e81; margin-bottom:12px;">🏌️‍♂️ 担当コーチ: {r_coach_name}</div>', unsafe_allow_html=True)
                 else:
@@ -610,10 +691,10 @@ with tab_history:
                     ("ダウンスイング", "previous_downswing"),
                 ):
                     st.markdown(f"**{label}**")
-                    st.markdown(render_text_box(rec.get(field) or "", "blue"), unsafe_allow_html=True)
+                    st.markdown(render_text_box(rec.get(field) or "", "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
 
                 st.markdown("### ■ 今回の練習内容")
-                st.markdown(render_text_box(r_lesson_practice, "blue"), unsafe_allow_html=True)
+                st.markdown(render_text_box(r_lesson_practice, "blue", text_color="#000080"), unsafe_allow_html=True)
                 st.markdown("### ■ 今回の課題・問題点")
                 for label, field in (
                     ("アドレス", "current_address"),
@@ -621,7 +702,7 @@ with tab_history:
                     ("ダウンスイング", "current_downswing"),
                 ):
                     st.markdown(f"**{label}**")
-                    st.markdown(render_text_box(rec.get(field) or "", "blue"), unsafe_allow_html=True)
+                    st.markdown(render_text_box(rec.get(field) or "", "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
 
                 # --- Android / iPhone / PC共通 動画・静止画 再生カード ---
                 has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
@@ -677,11 +758,9 @@ with tab_history:
                                 </div>
                                 """, unsafe_allow_html=True)
                                 img_fid = get_drive_file_id(img_url)
-                                if img_fid:
-                                    clean_img_url = clean_drive_url(img_url)
-                                    st.link_button("🔍 拡大表示", clean_img_url, use_container_width=True)
-                                else:
-                                    st.link_button("🔍 拡大表示", img_url, use_container_width=True)
+                                zoom_url = clean_drive_url(img_url) if img_fid else img_url
+                                with st.container(key=f"image_zoom_{r_id}_{idx}"):
+                                    st.link_button("🔍 拡大表示", zoom_url, use_container_width=True, type="primary")
 
                 st.markdown("---")
                 
