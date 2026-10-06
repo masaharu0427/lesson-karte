@@ -6,7 +6,7 @@ from datetime import datetime, date
 from urllib.parse import urlsplit, parse_qs, urlencode
 
 # ページ基本設定
-st.set_page_config(page_title="ゴルフ スイングチェックカルテ", layout="wide")
+st.set_page_config(page_title="スイング・チェックシート", layout="wide")
 
 # 画面リセット用のセッション管理
 if "refresh_key" not in st.session_state:
@@ -166,11 +166,12 @@ def update_student(student_id, name, handicap, goal):
 
 def delete_student(student_id):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM lessons WHERE student_id = ?", (student_id,))
-    c.execute("DELETE FROM students WHERE id = ?", (student_id,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn:
+            conn.execute("DELETE FROM lessons WHERE student_id = ?", (student_id,))
+            conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
+    finally:
+        conn.close()
 
 def get_coaches():
     conn = get_db_connection()
@@ -194,10 +195,11 @@ def add_coach(name):
 
 def delete_coach(coach_id):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM coaches WHERE id = ?", (coach_id,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn:
+            conn.execute("DELETE FROM coaches WHERE id = ?", (coach_id,))
+    finally:
+        conn.close()
 
 def save_lesson(student_id, lesson_date, coach_name, scores, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images=""):
     conn = get_db_connection()
@@ -310,7 +312,9 @@ def render_text_box(content, box_type="blue"):
     ">{content}</div>'''
 
 # --- 画面構成 ---
-st.title("⛳ ゴルフレッスン スイングチェックカルテ")
+st.title("スイング・チェックシート")
+if "management_notice" in st.session_state:
+    st.success(st.session_state.pop("management_notice"))
 
 # サイドバー
 st.sidebar.header("生徒管理")
@@ -326,6 +330,38 @@ with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
             st.success(f"{new_s_name} 様を登録しました")
             st.rerun()
 
+st.sidebar.markdown("---")
+st.sidebar.header("コーチ管理")
+raw_coaches = get_coaches()
+coach_list = [c["name"] for c in raw_coaches]
+
+with st.sidebar.expander("＋ コーチを登録", expanded=False):
+    new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
+    if st.button("＋ コーチを登録", key="btn_add_coach"):
+        if new_coach_name.strip():
+            if add_coach(new_coach_name.strip()):
+                st.success(f"{new_coach_name} を登録しました")
+                st.rerun()
+            else:
+                st.error("同じ名前のコーチが既に登録されています。")
+
+with st.sidebar.expander("🗑️ コーチを削除", expanded=True):
+    if raw_coaches:
+        coach_to_del = st.selectbox("削除するコーチを選択", options=coach_list, key="coach_to_del_select")
+        del_coach_id = next(c["id"] for c in raw_coaches if c["name"] == coach_to_del)
+        st.caption("コーチを削除しても、過去のレッスン記録と担当コーチ名は残ります。")
+        confirm_coach_delete = st.checkbox(f"{coach_to_del} を削除することを確認", key=f"confirm_coach_delete_{del_coach_id}")
+        if st.button("🗑️ 選択したコーチを削除", key=f"btn_del_coach_{del_coach_id}", disabled=not confirm_coach_delete):
+            try:
+                delete_coach(del_coach_id)
+                st.session_state.refresh_key += 1
+                st.session_state.management_notice = f"{coach_to_del} を削除しました。"
+                st.rerun()
+            except sqlite3.Error as e:
+                st.error(f"コーチの削除に失敗しました: {e}")
+    else:
+        st.info("登録済みのコーチはいません。")
+
 if not raw_students:
     st.info("サイドバーから生徒を登録してください。")
     st.stop()
@@ -336,7 +372,7 @@ selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_
 curr_student = student_dict[selected_name]
 selected_id = curr_student["id"]
 
-with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expanded=False):
+with st.sidebar.expander("👤 生徒プロフィールを編集", expanded=False):
     edit_s_name = st.text_input("氏名", value=selected_name, key=f"s_name_{selected_id}")
     edit_s_hdcp = st.text_input("ハンデ / 平均スコア", value=curr_student.get("handicap") or "", key=f"s_hdcp_{selected_id}")
     edit_s_goal = st.text_input("長期目標", value=curr_student.get("goal") or "", key=f"s_goal_{selected_id}")
@@ -350,38 +386,19 @@ with st.sidebar.expander("👤 生徒プロフィールを編集・削除", expa
             else:
                 st.error("同姓同名の生徒が既に存在します。別の名前を指定してください。")
                 
-    st.markdown("---")
-    del_s_chk = st.checkbox("この生徒と全レッスン履歴を削除する", key=f"del_s_chk_{selected_id}")
-    if st.button("🗑️ 生徒を完全削除", key=f"btn_del_s_{selected_id}", disabled=not del_s_chk):
-        delete_student(selected_id)
-        st.session_state.refresh_key += 1
-        st.warning(f"{selected_name} 様を削除しました。")
-        st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.header("コーチ管理")
-raw_coaches = get_coaches()
-coach_list = [c["name"] for c in raw_coaches]
-
-with st.sidebar.expander("🏌️‍♂️ コーチの追加・削除", expanded=False):
-    new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
-    if st.button("＋ コーチを登録", key="btn_add_coach"):
-        if new_coach_name.strip():
-            if add_coach(new_coach_name.strip()):
-                st.success(f"{new_coach_name} を登録しました")
-                st.rerun()
-            else:
-                st.error("同じ名前のコーチが既に登録されています。")
-    
-    if raw_coaches:
-        st.markdown("---")
-        st.caption("登録済みコーチの削除:")
-        coach_to_del = st.selectbox("削除するコーチを選択", options=[c["name"] for c in raw_coaches], key="coach_to_del_select")
-        del_coach_id = [c["id"] for c in raw_coaches if c["name"] == coach_to_del][0]
-        if st.button(f"🗑️ {coach_to_del} を削除", key="btn_del_coach"):
-            delete_coach(del_coach_id)
-            st.warning(f"{coach_to_del} を削除しました。")
+with st.sidebar.expander("🗑️ 生徒を削除", expanded=True):
+    st.write(f"削除対象：{selected_name} 様")
+    st.caption("この生徒のプロフィールと全レッスン履歴を削除します。元に戻せません。")
+    del_s_chk = st.checkbox("この生徒と全レッスン履歴を削除することを確認", key=f"del_s_chk_{selected_id}")
+    if st.button("🗑️ 選択した生徒を削除", key=f"btn_del_s_{selected_id}", disabled=not del_s_chk):
+        try:
+            delete_student(selected_id)
+            st.session_state.refresh_key += 1
+            st.session_state.management_notice = f"{selected_name} 様と全レッスン履歴を削除しました。"
             st.rerun()
+        except sqlite3.Error as e:
+            st.error(f"生徒の削除に失敗しました: {e}")
+
 
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student.get('handicap') or '未設定'} ｜ **長期目標:** {curr_student.get('goal') or '未設定'}")
 
