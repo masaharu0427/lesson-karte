@@ -327,8 +327,16 @@ if "management_notice" in st.session_state:
     st.success(st.session_state.pop("management_notice"))
 
 # サイドバー
-st.sidebar.header("生徒管理")
 raw_students = get_students()
+student_dict = {s["name"]: s for s in raw_students}
+if raw_students:
+    selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_dict.keys()))
+else:
+    st.sidebar.selectbox("受講者を選択", options=["生徒を登録してください"], disabled=True)
+    selected_name = None
+
+st.sidebar.markdown("---")
+st.sidebar.header("生徒管理")
 
 with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
     new_s_name = st.text_input("生徒名", key="new_s_name")
@@ -376,9 +384,6 @@ if not raw_students:
     st.info("サイドバーから生徒を登録してください。")
     st.stop()
 
-student_dict = {s["name"]: s for s in raw_students}
-selected_name = st.sidebar.selectbox("受講者を選択", options=list(student_dict.keys()))
-
 curr_student = student_dict[selected_name]
 selected_id = curr_student["id"]
 
@@ -420,17 +425,17 @@ tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "�
 with tab_new:
     st.subheader(f"{selected_name} 様 - レッスンチェック新規入力")
     
-    fk = f"{selected_id}_{st.session_state.form_reset_key}"
+    fk = f"{selected_id}_{st.session_state.form_reset_key}_blank"
     
     top_col1, top_col2 = st.columns(2)
     with top_col1:
-        lesson_date = st.date_input("📅 レッスン受講日", value=date.today(), key=f"new_date_{fk}")
+        lesson_date = st.date_input("📅 レッスン受講日", value=None, key=f"new_date_{fk}")
     with top_col2:
-        coach_options = ["（未選択）"] + coach_list
+        coach_options = [""] + coach_list
         selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
-        new_coach_val = "" if selected_coach_new == "（未選択）" else selected_coach_new
+        new_coach_val = selected_coach_new
 
-    previous = get_previous_lesson(selected_id, lesson_date)
+    previous = get_previous_lesson(selected_id, lesson_date) if lesson_date else None
     previous_key = f"{selected_id}_{fk}_{lesson_date}_{previous['id'] if previous else 0}_{st.session_state.refresh_key}"
     st.markdown("### ■ 前回の課題・問題点")
     previous_check_date = st.date_input(
@@ -457,7 +462,9 @@ with tab_new:
     if previous:
         st.caption("直前のレッスンで記入した問題点を表示しています。必要に応じて書き直せます。")
 
-    if not previous:
+    if not lesson_date:
+        st.caption("レッスン受講日を選択すると、前回の記録が表示されます。")
+    elif not previous:
         st.caption("直前のレッスン記録がないため、空欄から記入できます。")
 
     st.markdown("---")
@@ -532,6 +539,8 @@ with tab_new:
 
     if save_clicked:
         try:
+            if lesson_date is None:
+                raise ValueError("レッスン受講日を選択してください。")
             clean_v1 = clean_drive_url(v1_url)
             clean_v2 = clean_drive_url(v2_url)
             drive_imgs_clean = ",".join([clean_drive_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
