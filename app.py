@@ -682,6 +682,11 @@ with tab_new:
 
     save_clicked = st.button("💾 このレッスンカルテを保存する", type="primary", use_container_width=True)
 
+    # 保存後の再描画でも、保存ボタンの直下に完了メッセージを表示する。
+    save_message_key = f"new_lesson_saved_{selected_id}"
+    if st.session_state.pop(save_message_key, False):
+        st.success("保存しました")
+
     if save_clicked:
         try:
             if lesson_date is None:
@@ -700,7 +705,7 @@ with tab_new:
             
             st.session_state.form_reset_key += 1
             st.session_state.refresh_key += 1
-            st.success("✅ レッスンカルテを保存しました！")
+            st.session_state[save_message_key] = True
             st.rerun()
 
         except Exception as e:
@@ -733,7 +738,7 @@ with tab_history:
             expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
             edit_expander_title = f"✏️ この練習記録の内容を編集する" + ("\u200b" * rf_k)
             
-            with st.expander(expander_title, expanded=(r_id == records[0]["id"])):
+            with st.expander(expander_title, expanded=False):
                 if r_coach_name:
                     st.markdown(f'<div style="background-color:#eef2ff; border-left:4px solid #4f46e5; padding:8px 12px; border-radius:4px; font-weight:bold; color:#312e81; margin-bottom:12px;">🏌️‍♂️ 担当コーチ: {r_coach_name}</div>', unsafe_allow_html=True)
                 else:
