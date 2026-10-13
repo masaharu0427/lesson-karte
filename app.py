@@ -1,7 +1,10 @@
 import streamlit as st
 import streamlit.components.v1 as components
 from html import escape
-import sqlite3
+import gspread
+import threading
+from uuid import uuid4
+from datetime import timezone
 import os
 import re
 from datetime import datetime, date
@@ -44,11 +47,132 @@ if "refresh_key" not in st.session_state:
 if "form_reset_key" not in st.session_state:
     st.session_state.form_reset_key = 0
 
-# DB接続ヘルパー
-def get_db_connection():
-    conn = sqlite3.connect("golf_lesson.db")
-    conn.row_factory = sqlite3.Row
-    return conn
+# Googleスプレッドシートのみを保存先にする。ローカルDBへの代替保存は禁止。
+class StorageError(Exception):
+    pass
+
+SCHEMAS = {
+    "students": ["id", "name", "handicap", "goal", "revision", "deleted"],
+    "coaches": ["id", "name", "revision", "deleted"],
+    "lessons": [
+        "id", "student_id", "lesson_date", "coach_name", "target_goal",
+        "lesson_practice", "evaluation_note", "v1_url", "v2_url", "v3_url", "v4_url",
+        "drive_images", "previous_issues", "previous_check_date", "current_issues",
+        "previous_address", "previous_backswing", "previous_downswing",
+        "current_address", "current_backswing", "current_downswing", "revision", "deleted",
+    ],
+}
+
+@st.cache_resource
+def storage_lock():
+    # 同一アプリプロセス内で、複数コーチの保存処理を直列化。
+    return threading.RLock()
+
+
+def new_record_id():
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f") + "_" + uuid4().hex
+
+
+class SheetsStore:
+    def __init__(self, workbook):
+        self.book = workbook
+        self.sheets = {}
+        self.cache = {}
+
+    def initialize(self):
+        with storage_lock():
+            worksheets = {sheet.title: sheet for sheet in self.book.worksheets()}
+            for name, headers in SCHEMAS.items():
+                sheet = worksheets.get(name)
+                if sheet is None:
+                    sheet = self.book.add_worksheet(title=name, rows=1000, cols=len(headers))
+                values = sheet.get_all_values()
+                if not values:
+                    sheet.update(range_name="A1", values=[headers], raw=True)
+                elif values[0] != headers:
+                    raise StorageError(f"{name} シートの見出しが異なります。専用の空のスプレッドシートを指定してください。")
+                self.sheets[name] = sheet
+
+    def records(self, name, fresh=False):
+        if fresh or name not in self.cache:
+            values = self.sheets[name].get_all_values()
+            headers = SCHEMAS[name]
+            if not values or values[0] != headers:
+                raise StorageError(f"{name} シートの見出しが変更されています。")
+            records = []
+            for row_number, row in enumerate(values[1:], 2):
+                row = row + [""] * (len(headers) - len(row))
+                record = dict(zip(headers, row))
+                if not record["id"] or record["deleted"]:
+                    continue
+                record["_row"] = row_number
+                records.append(record)
+            self.cache[name] = records
+        # 画面で初めて表示した時点の版を保存。再実行で勝手に更新しない。
+        versions = st.session_state.setdefault("loaded_versions", {})
+        for record in self.cache[name]:
+            versions.setdefault((name, record["id"]), record["revision"])
+        return [dict(record) for record in self.cache[name]]
+
+    def append(self, name, data):
+        record = dict(data, id=new_record_id(), revision=uuid4().hex, deleted="")
+        values = [str(record.get(field) or "") for field in SCHEMAS[name]]
+        # append APIで追記する。読み込んだ表全体を上書きしない。
+        self.sheets[name].append_row(values, value_input_option="RAW", insert_data_option="INSERT_ROWS", table_range="A1")
+        self.cache.pop(name, None)
+        return record["id"]
+
+    def update(self, name, record_id, changes, expected=None):
+        with storage_lock():
+            record = next((r for r in self.records(name, fresh=True) if r["id"] == str(record_id)), None)
+            if record is None:
+                raise StorageError("この記録は削除されています。画面を再読み込みしてください。")
+            if expected is None:
+                expected = st.session_state.get("loaded_versions", {}).get((name, str(record_id)))
+            if expected is None or record["revision"] != expected:
+                raise StorageError("他のコーチがこの記録を変更しました。入力内容を控え、左側の「最新データを読み込む」を押して確認してください。")
+            record.update(changes)
+            record["revision"] = uuid4().hex
+            # 書き込み直前に、行が移動していないことを確認する。
+            current = self.sheets[name].row_values(record["_row"])
+            rev_index = SCHEMAS[name].index("revision")
+            if not current or current[0] != str(record_id) or len(current) <= rev_index or current[rev_index] != expected:
+                raise StorageError("保存中にデータが変わりました。入力内容を控え、最新データを読み込んでください。")
+            values = [str(record.get(field) or "") for field in SCHEMAS[name]]
+            self.sheets[name].update(range_name=f"A{record['_row']}", values=[values], raw=True)
+            st.session_state["loaded_versions"][(name, str(record_id))] = record["revision"]
+            self.cache.pop(name, None)
+
+    def delete(self, name, record_id, expected=None):
+        # 行を詰めず、削除フラグを付ける。別の記録の行番号を変えない。
+        self.update(name, record_id, {"deleted": datetime.now(timezone.utc).isoformat()}, expected=expected)
+
+
+def connect_sheets():
+    try:
+        spreadsheet_id = st.secrets["google_sheets"]["spreadsheet_id"].strip()
+        credentials = dict(st.secrets["gcp_service_account"])
+        if not spreadsheet_id or not credentials.get("private_key"):
+            raise ValueError("missing settings")
+    except Exception:
+        st.error("Googleスプレッドシートへの接続設定が未完了です。設定手順のSecretsを登録してください。データの登録はまだできません。")
+        st.stop()
+    try:
+        client = gspread.service_account_from_dict(
+            credentials, scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        workbook = client.open_by_key(spreadsheet_id)
+        store = SheetsStore(workbook)
+        store.initialize()
+        return store
+    except StorageError as error:
+        st.error(str(error))
+        st.stop()
+    except Exception:
+        st.error("Googleスプレッドシートに接続できません。シートID・APIの有効化・サービスアカウントの編集権限を確認してください。接続が直るまで保存はできません。")
+        st.stop()
+
+store = connect_sheets()
 
 # GoogleドライブのファイルID抽出
 def get_drive_file_id(url):
@@ -157,97 +281,17 @@ def render_video_links(url, number):
             use_container_width=True,
         )
 
-# データベース初期化・マイグレーション
-def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            handicap TEXT,
-            goal TEXT
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS coaches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS lessons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_id INTEGER,
-            lesson_date TEXT,
-            addr_posture INTEGER,
-            addr_align INTEGER,
-            back_path INTEGER,
-            back_top INTEGER,
-            down_plane INTEGER,
-            down_release INTEGER,
-            video1 TEXT,
-            video2 TEXT,
-            images TEXT,
-            target_goal TEXT,
-            lesson_practice TEXT,
-            evaluation_note TEXT,
-            v1_url TEXT,
-            v2_url TEXT,
-            coach_name TEXT,
-            drive_images TEXT,
-            FOREIGN KEY (student_id) REFERENCES students(id)
-        )
-    ''')
-    
-    c.execute("PRAGMA table_info(lessons)")
-    existing_cols = [col["name"] for col in c.fetchall()]
-    if "target_goal" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN target_goal TEXT")
-    if "lesson_practice" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN lesson_practice TEXT")
-    if "evaluation_note" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN evaluation_note TEXT")
-    if "v1_url" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN v1_url TEXT")
-    if "v2_url" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN v2_url TEXT")
-    if "coach_name" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN coach_name TEXT")
-    if "drive_images" not in existing_cols:
-        c.execute("ALTER TABLE lessons ADD COLUMN drive_images TEXT")
-
-    for column in ("v3_url", "v4_url", "current_issues", "previous_issues", "previous_check_date", "previous_address", "previous_backswing", "previous_downswing", "current_address", "current_backswing", "current_downswing"):
-        if column not in existing_cols:
-            c.execute(f"ALTER TABLE lessons ADD COLUMN {column} TEXT")
-
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# DB操作関数
+# データ操作（すべてGoogleスプレッドシートに保存）
 def get_students():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, name, handicap, goal FROM students ORDER BY name")
-    rows = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return rows
+    return sorted(store.records("students"), key=lambda record: record["name"])
+
 
 def add_student(name, handicap, goal):
-    conn = get_db_connection()
-    try:
-        with conn:
-            conn.execute("INSERT INTO students (name, handicap, goal) VALUES (?, ?, ?)", (name, handicap, goal))
+    with storage_lock():
+        if any(record["name"] == name for record in store.records("students", fresh=True)):
+            return False
+        store.append("students", {"name": name, "handicap": handicap, "goal": goal})
         return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
 
 def register_student_from_form():
     name = st.session_state.get("new_s_name", "").strip()
@@ -260,7 +304,7 @@ def register_student_from_form():
             st.session_state.get("new_s_hdcp", "").strip(),
             st.session_state.get("new_s_goal", "").strip(),
         )
-    except sqlite3.Error as error:
+    except Exception as error:
         st.session_state["student_registration_error"] = f"登録に失敗しました: {error}"
         return
     if not success:
@@ -272,16 +316,12 @@ def register_student_from_form():
     st.session_state["management_notice"] = f"{name} 様を登録しました。"
 
 def update_student(student_id, name, handicap, goal):
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute('UPDATE students SET name = ?, handicap = ?, goal = ? WHERE id = ?', (name, handicap, goal, student_id))
-        conn.commit()
-        success = True
-    except sqlite3.IntegrityError:
-        success = False
-    conn.close()
-    return success
+    with storage_lock():
+        if any(record["name"] == name and record["id"] != str(student_id)
+               for record in store.records("students", fresh=True)):
+            return False
+        store.update("students", student_id, {"name": name, "handicap": handicap, "goal": goal})
+        return True
 
 def update_student_from_form(student_id):
     keys = (f"s_name_{student_id}", f"s_hdcp_{student_id}", f"s_goal_{student_id}")
@@ -291,7 +331,7 @@ def update_student_from_form(student_id):
         return
     try:
         success = update_student(student_id, name, handicap, goal)
-    except sqlite3.Error as error:
+    except Exception as error:
         st.session_state["profile_update_error"] = f"更新に失敗しました: {error}"
         return
     if not success:
@@ -305,103 +345,75 @@ def update_student_from_form(student_id):
     st.session_state["management_notice"] = "プロフィールを更新しました。"
 
 def delete_student(student_id):
-    conn = get_db_connection()
-    try:
-        with conn:
-            conn.execute("DELETE FROM lessons WHERE student_id = ?", (student_id,))
-            conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
-    finally:
-        conn.close()
+    with storage_lock():
+        # まず生徒を非表示にする。途中で通信が切れても履歴だけ失う順序にはしない。
+        store.delete("students", student_id)
+        for record in store.records("lessons", fresh=True):
+            if record["student_id"] == str(student_id):
+                store.delete("lessons", record["id"], expected=record["revision"])
+
 
 def get_coaches():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, name FROM coaches ORDER BY name")
-    rows = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return rows
+    return sorted(store.records("coaches"), key=lambda record: record["name"])
+
 
 def add_coach(name):
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO coaches (name) VALUES (?)", (name,))
-        conn.commit()
-        success = True
-    except sqlite3.IntegrityError:
-        success = False
-    conn.close()
-    return success
+    with storage_lock():
+        if any(record["name"] == name for record in store.records("coaches", fresh=True)):
+            return False
+        store.append("coaches", {"name": name})
+        return True
+
 
 def delete_coach(coach_id):
-    conn = get_db_connection()
-    try:
-        with conn:
-            conn.execute("DELETE FROM coaches WHERE id = ?", (coach_id,))
-    finally:
-        conn.close()
+    store.delete("coaches", coach_id)
+
+
+def lesson_data(lesson_date, coach_name, target_goal, lesson_practice, evaluation_note,
+                v1_url, v2_url, drive_images, previous_issues, previous_check_date,
+                previous_address, previous_backswing, previous_downswing,
+                current_address, current_backswing, current_downswing,
+                current_issues, v3_url, v4_url):
+    return {
+        "lesson_date": str(lesson_date), "coach_name": coach_name,
+        "target_goal": target_goal, "lesson_practice": lesson_practice,
+        "evaluation_note": evaluation_note, "v1_url": v1_url, "v2_url": v2_url,
+        "v3_url": v3_url, "v4_url": v4_url, "drive_images": drive_images,
+        "previous_issues": previous_issues,
+        "previous_check_date": str(previous_check_date) if previous_check_date else "",
+        "current_issues": current_issues if current_issues is not None else "",
+    }
+
 
 def save_lesson(student_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing="", current_issues=None, v3_url="", v4_url=""):
-    conn = get_db_connection()
-    try:
-        with conn:
-            conn.execute("""
-                INSERT INTO lessons (
-                    student_id, lesson_date, coach_name,
-                    target_goal, lesson_practice, evaluation_note,
-                    v1_url, v2_url, drive_images,
-                    previous_issues, previous_check_date,
-                    previous_address, previous_backswing, previous_downswing,
-                    current_address, current_backswing, current_downswing,
-                    current_issues, v3_url, v4_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (student_id, str(lesson_date), coach_name,
-                  target_goal, lesson_practice, evaluation_note,
-                  v1_url, v2_url, drive_images, previous_issues,
-                  str(previous_check_date) if previous_check_date else "",
-                  previous_address, previous_backswing, previous_downswing,
-                  current_address, current_backswing, current_downswing,
-                  current_issues, v3_url, v4_url))
-    finally:
-        conn.close()
+    with storage_lock():
+        if not any(record["id"] == str(student_id) for record in store.records("students", fresh=True)):
+            raise StorageError("この生徒は削除されています。最新データを読み込んでください。")
+        data = lesson_data(lesson_date, coach_name, target_goal, lesson_practice, evaluation_note,
+            v1_url, v2_url, drive_images, previous_issues, previous_check_date,
+            previous_address, previous_backswing, previous_downswing,
+            current_address, current_backswing, current_downswing, current_issues, v3_url, v4_url)
+        data["student_id"] = str(student_id)
+        store.append("lessons", data)
+
 
 def update_lesson(lesson_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing="", current_issues=None, v3_url="", v4_url=""):
-    conn = get_db_connection()
-    try:
-        with conn:
-            conn.execute("""
-                UPDATE lessons SET lesson_date = ?, coach_name = ?,
-                    target_goal = ?, lesson_practice = ?, evaluation_note = ?,
-                    v1_url = ?, v2_url = ?, drive_images = ?,
-                    previous_issues = ?, previous_check_date = ?,
-                    previous_address = ?, previous_backswing = ?, previous_downswing = ?,
-                    current_address = ?, current_backswing = ?, current_downswing = ?,
-                    current_issues = ?, v3_url = ?, v4_url = ?
-                WHERE id = ?
-            """, (str(lesson_date), coach_name,
-                  target_goal, lesson_practice, evaluation_note,
-                  v1_url, v2_url, drive_images, previous_issues,
-                  str(previous_check_date) if previous_check_date else "",
-                  previous_address, previous_backswing, previous_downswing,
-                  current_address, current_backswing, current_downswing,
-                  current_issues, v3_url, v4_url, lesson_id))
-    finally:
-        conn.close()
+    data = lesson_data(lesson_date, coach_name, target_goal, lesson_practice, evaluation_note,
+        v1_url, v2_url, drive_images, previous_issues, previous_check_date,
+        previous_address, previous_backswing, previous_downswing,
+        current_address, current_backswing, current_downswing, current_issues, v3_url, v4_url)
+    store.update("lessons", lesson_id, data)
+
 
 def delete_lesson(lesson_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
-    conn.commit()
-    conn.close()
+    store.delete("lessons", lesson_id)
+
 
 def get_student_history(student_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM lessons WHERE student_id = ? ORDER BY lesson_date DESC, id DESC", (student_id,))
-    rows = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return rows
+    return sorted(
+        [record for record in store.records("lessons") if record["student_id"] == str(student_id)],
+        key=lambda record: (record["lesson_date"], record["id"]), reverse=True,
+    )
 
 def get_previous_lesson(student_id, lesson_date, lesson_id=None):
     # 日付順。同日では、編集中の記録より前に登録された記録だけを参照。
@@ -489,7 +501,7 @@ def render_text_box(content, box_type="blue", text_color="#222", empty_label="�
         color: {text_color};
         margin-top: 6px;
         margin-bottom: 12px;
-    ">{content}</div>'''
+    ">{escape(str(content))}</div>'''
 
 # --- 画面構成 ---
 st.title("スイング・チェックシート")
@@ -499,8 +511,27 @@ if "management_notice" in st.session_state:
     st.success(st.session_state.pop("management_notice"))
 
 # サイドバー
-raw_students = get_students()
-student_dict = {s["name"]: s for s in raw_students}
+st.sidebar.caption("保存先：Googleスプレッドシート")
+if st.sidebar.button("最新データを読み込む", key="reload_sheet_data"):
+    st.session_state.pop("loaded_versions", None)
+    for key in list(st.session_state):
+        if key.startswith(("s_name_", "s_hdcp_", "s_goal_", "ed_")):
+            del st.session_state[key]
+    st.session_state.refresh_key += 1
+    st.rerun()
+try:
+    raw_students = get_students()
+    raw_coaches = get_coaches()
+except Exception:
+    st.error("保存データを読み込めません。時間をおいて再読み込みしてください。")
+    st.stop()
+name_counts = {}
+for student in raw_students:
+    name_counts[student["name"]] = name_counts.get(student["name"], 0) + 1
+student_dict = {
+    (student["name"] if name_counts[student["name"]] == 1 else f"{student['name']} (ID: {student['id']})"): student
+    for student in raw_students
+}
 student_options = [""] + list(student_dict.keys())
 if st.session_state.get("selected_student_name_blank", "") not in student_options:
     st.session_state["selected_student_name_blank"] = ""
@@ -545,7 +576,7 @@ if selected_name:
         st.markdown("---")
         st.markdown("### 🗑️ 生徒を削除")
         st.write(f"削除対象：{selected_name} 様")
-        st.caption("この生徒のプロフィールと全レッスン履歴を削除します。元に戻せません。")
+        st.caption("この生徒のプロフィールと全レッスン履歴を一覧から削除します。")
         del_s_chk = st.checkbox("この生徒と全レッスン履歴を削除することを確認", key=f"del_s_chk_{selected_id}")
         if st.button("🗑️ 選択した生徒を削除", key=f"btn_del_s_{selected_id}", disabled=not del_s_chk):
             try:
@@ -553,11 +584,10 @@ if selected_name:
                 st.session_state.refresh_key += 1
                 st.session_state.management_notice = f"{selected_name} 様と全レッスン履歴を削除しました。"
                 st.rerun()
-            except sqlite3.Error as e:
+            except Exception as e:
                 st.error(f"生徒の削除に失敗しました: {e}")
 
 st.sidebar.markdown("---")
-raw_coaches = get_coaches()
 coach_list = [c["name"] for c in raw_coaches]
 
 with st.sidebar.expander("コーチ管理", expanded=False):
@@ -565,11 +595,14 @@ with st.sidebar.expander("コーチ管理", expanded=False):
     new_coach_name = st.text_input("新規コーチ氏名", placeholder="例: 山田 コーチ", key="new_coach_name_input")
     if st.button("＋ コーチを登録", key="btn_add_coach"):
         if new_coach_name.strip():
-            if add_coach(new_coach_name.strip()):
-                st.success(f"{new_coach_name} を登録しました")
-                st.rerun()
-            else:
-                st.error("同じ名前のコーチが既に登録されています。")
+            try:
+                if add_coach(new_coach_name.strip()):
+                    st.success(f"{new_coach_name} を登録しました")
+                    st.rerun()
+                else:
+                    st.error("同じ名前のコーチが既に登録されています。")
+            except Exception as error:
+                st.error(f"コーチの登録に失敗しました: {error}")
 
     st.markdown("---")
     st.markdown("### 🗑️ コーチを削除")
@@ -584,7 +617,7 @@ with st.sidebar.expander("コーチ管理", expanded=False):
                 st.session_state.refresh_key += 1
                 st.session_state.management_notice = f"{coach_to_del} を削除しました。"
                 st.rerun()
-            except sqlite3.Error as e:
+            except Exception as e:
                 st.error(f"コーチの削除に失敗しました: {e}")
     else:
         st.info("登録済みのコーチはいません。")
