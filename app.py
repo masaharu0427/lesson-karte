@@ -8,6 +8,7 @@ from datetime import timezone
 import os
 import re
 from datetime import datetime, date
+from calendar import monthrange
 from urllib.parse import urlsplit, parse_qs, urlencode
 
 # ページ基本設定
@@ -501,6 +502,50 @@ def parse_optional_date(value):
     except (TypeError, ValueError):
         return None
 
+def format_japanese_date(value):
+    """表示用。保存と日付順の比較には従来のISO形式を使用する。"""
+    parsed = value if isinstance(value, date) else parse_optional_date(value)
+    return parsed.strftime("%Y年%m月%d日") if parsed else "未記入"
+
+
+def japanese_date_input(label, value=None, key=None):
+    """年・月・日を日本語で選択し、有効なdateまたは未入力のNoneを返す。"""
+    initial = value if isinstance(value, date) else parse_optional_date(value)
+    today = date.today()
+    base = initial or today
+    st.markdown(f"**{label}**")
+    year_options = [None] + list(range(min(1900, base.year), max(2100, today.year + 10, base.year) + 1))
+    year_key, month_key, day_key = f"{key}_year", f"{key}_month", f"{key}_day"
+    year_col, month_col, day_col = st.columns(3)
+    with year_col:
+        year = st.selectbox(
+            f"{label}：年", year_options,
+            index=year_options.index(initial.year) if initial else 0,
+            format_func=lambda n: f"{n:04d}年" if n is not None else "年を選択",
+            key=year_key, label_visibility="collapsed",
+        )
+    with month_col:
+        month = st.selectbox(
+            f"{label}：月", range(1, 13), index=base.month - 1,
+            format_func=lambda n: f"{n:02d}月", key=month_key,
+            label_visibility="collapsed",
+        )
+    last_day = monthrange(year or base.year, month)[1]
+    # 月・年を変えたときは、31日やうるう日の選択を有効な末日に調整する。
+    if day_key in st.session_state and st.session_state[day_key] > last_day:
+        st.session_state[day_key] = last_day
+    with day_col:
+        day = st.selectbox(
+            f"{label}：日", range(1, last_day + 1),
+            index=min(base.day, last_day) - 1,
+            format_func=lambda n: f"{n:02d}日", key=day_key,
+            label_visibility="collapsed",
+        )
+    selected = date(year, month, day) if year is not None else None
+    st.caption(format_japanese_date(selected))
+    return selected
+
+
 def render_text_box(content, box_type="blue", text_color="#222", empty_label="（未記入）"):
     if not content or not str(content).strip():
         if empty_label:
@@ -665,7 +710,7 @@ with tab_new:
     
     top_col1, top_col2 = st.columns(2)
     with top_col1:
-        lesson_date = st.date_input("📅 レッスン受講日", value=None, key=f"new_date_{fk}")
+        lesson_date = japanese_date_input("📅 レッスン受講日", value=None, key=f"new_date_{fk}")
     with top_col2:
         coach_options = [""] + coach_list
         selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
@@ -678,7 +723,7 @@ with tab_new:
         previous = student_history[0] if student_history else None
     previous_key = f"{selected_id}_{fk}_{lesson_date}_{previous['id'] if previous else 0}_{st.session_state.refresh_key}"
     st.markdown("### ■ 前回の課題・問題点")
-    previous_check_date = st.date_input(
+    previous_check_date = japanese_date_input(
         "📅 直前のレッスン（チェック日）",
         value=parse_optional_date(previous["lesson_date"]) if previous else None,
         key=f"new_previous_date_{previous_key}",
@@ -787,7 +832,7 @@ with tab_history:
             r_drive_images = rec.get("drive_images") or ""
             
             coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
-            expander_title = f"📅 レッスン日: {r_date}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
+            expander_title = f"📅 レッスン日: {format_japanese_date(r_date)}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
             edit_expander_title = f"✏️ この練習記録の内容を編集する" + ("\u200b" * rf_k)
             
             with st.expander(expander_title, expanded=False):
@@ -804,7 +849,7 @@ with tab_history:
                 if r_previous_date is None:
                     r_previous_date = previous["lesson_date"] if previous else ""
                 st.markdown("**📌 前回の課題・問題点:**")
-                st.caption(f"直前のレッスン（チェック日）：{r_previous_date or '未記入'}")
+                st.caption(f"直前のレッスン（チェック日）：{format_japanese_date(r_previous_date)}")
                 st.markdown(render_text_box(r_previous_issues, "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
 
                 st.markdown("### ■ 今回の練習内容")
@@ -863,14 +908,14 @@ with tab_history:
                     
                     e_top_c1, e_top_c2 = st.columns(2)
                     with e_top_c1:
-                        edit_date = st.date_input("📅 レッスン受講日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
+                        edit_date = japanese_date_input("📅 レッスン受講日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
                     with e_top_c2:
                         edit_coach_options = ["（未選択）"] + coach_list
                         default_coach_idx = edit_coach_options.index(r_coach_name) if r_coach_name in edit_coach_options else 0
                         chosen_coach_edit = st.selectbox("🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
                         edit_coach_val = "" if chosen_coach_edit == "（未選択）" else chosen_coach_edit
                     
-                    edit_previous_date = st.date_input(
+                    edit_previous_date = japanese_date_input(
                         "📅 直前のレッスン（チェック日）",
                         value=parse_optional_date(r_previous_date),
                         key=f"ed_previous_date_{r_id}_{rf_k}",
