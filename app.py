@@ -13,9 +13,8 @@ st.set_page_config(page_title="スイング・チェックシート", layout="wi
 # 課題・問題点は赤、練習内容は紺（新規入力・履歴編集共通）。
 st.markdown("""
 <style>
-textarea[aria-label="アドレス"],
-textarea[aria-label="バックスイング"],
-textarea[aria-label="ダウンスイング"] {
+textarea[aria-label="前回の課題・問題点"],
+textarea[aria-label="今回の課題・問題点"] {
     color: #cc0000 !important;
     -webkit-text-fill-color: #cc0000 !important;
 }
@@ -221,7 +220,7 @@ def init_db():
     if "drive_images" not in existing_cols:
         c.execute("ALTER TABLE lessons ADD COLUMN drive_images TEXT")
 
-    for column in ("previous_issues", "previous_check_date", "previous_address", "previous_backswing", "previous_downswing", "current_address", "current_backswing", "current_downswing"):
+    for column in ("v3_url", "v4_url", "current_issues", "previous_issues", "previous_check_date", "previous_address", "previous_backswing", "previous_downswing", "current_address", "current_backswing", "current_downswing"):
         if column not in existing_cols:
             c.execute(f"ALTER TABLE lessons ADD COLUMN {column} TEXT")
 
@@ -342,7 +341,7 @@ def delete_coach(coach_id):
     finally:
         conn.close()
 
-def save_lesson(student_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing=""):
+def save_lesson(student_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing="", current_issues=None, v3_url="", v4_url=""):
     conn = get_db_connection()
     try:
         with conn:
@@ -353,18 +352,20 @@ def save_lesson(student_id, lesson_date, coach_name, target_goal, lesson_practic
                     v1_url, v2_url, drive_images,
                     previous_issues, previous_check_date,
                     previous_address, previous_backswing, previous_downswing,
-                    current_address, current_backswing, current_downswing
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_address, current_backswing, current_downswing,
+                    current_issues, v3_url, v4_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (student_id, str(lesson_date), coach_name,
                   target_goal, lesson_practice, evaluation_note,
                   v1_url, v2_url, drive_images, previous_issues,
                   str(previous_check_date) if previous_check_date else "",
                   previous_address, previous_backswing, previous_downswing,
-                  current_address, current_backswing, current_downswing))
+                  current_address, current_backswing, current_downswing,
+                  current_issues, v3_url, v4_url))
     finally:
         conn.close()
 
-def update_lesson(lesson_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing=""):
+def update_lesson(lesson_id, lesson_date, coach_name, target_goal, lesson_practice, evaluation_note, v1_url="", v2_url="", drive_images="", previous_issues="", previous_check_date=None, previous_address="", previous_backswing="", previous_downswing="", current_address="", current_backswing="", current_downswing="", current_issues=None, v3_url="", v4_url=""):
     conn = get_db_connection()
     try:
         with conn:
@@ -374,14 +375,16 @@ def update_lesson(lesson_id, lesson_date, coach_name, target_goal, lesson_practi
                     v1_url = ?, v2_url = ?, drive_images = ?,
                     previous_issues = ?, previous_check_date = ?,
                     previous_address = ?, previous_backswing = ?, previous_downswing = ?,
-                    current_address = ?, current_backswing = ?, current_downswing = ?
+                    current_address = ?, current_backswing = ?, current_downswing = ?,
+                    current_issues = ?, v3_url = ?, v4_url = ?
                 WHERE id = ?
             """, (str(lesson_date), coach_name,
                   target_goal, lesson_practice, evaluation_note,
                   v1_url, v2_url, drive_images, previous_issues,
                   str(previous_check_date) if previous_check_date else "",
                   previous_address, previous_backswing, previous_downswing,
-                  current_address, current_backswing, current_downswing, lesson_id))
+                  current_address, current_backswing, current_downswing,
+                  current_issues, v3_url, v4_url, lesson_id))
     finally:
         conn.close()
 
@@ -410,13 +413,42 @@ def get_previous_lesson(student_id, lesson_date, lesson_id=None):
             return record
     return None
 
-def previous_issue_value(record, phase):
+def combined_issues(record, kind):
+    # 新しい統合欄を優先。旧記録の3区分も内容を失わずに表示する。
     if not record:
         return ""
-    value = record.get(f"current_{phase}")
+    value = record.get(f"{kind}_issues")
+    if value is not None and (kind == "current" or value.strip()):
+        return value
+    parts = []
+    for label, phase in (("アドレス", "address"), ("バックスイング", "backswing"), ("ダウンスイング", "downswing")):
+        content = record.get(f"{kind}_{phase}") or ""
+        if content.strip():
+            parts.append(f"【{label}】\n{content}")
+    if parts:
+        return "\n\n".join(parts)
     if value is not None:
         return value
-    return record.get(f"previous_{phase}") or ""
+    return (record.get("target_goal") or "") if kind == "current" else ""
+
+
+def previous_issue_value(record):
+    if not record:
+        return ""
+    # 今回欄が空欄として保存されている場合も、その内容をそのまま引き継ぐ。
+    if record.get("current_issues") is not None or any(
+        record.get(f"current_{phase}") is not None
+        for phase in ("address", "backswing", "downswing")
+    ):
+        return combined_issues(record, "current")
+    return combined_issues(record, "previous") or combined_issues(record, "current")
+
+
+def clean_image_links(text):
+    links = [clean_drive_url(line) for line in text.splitlines() if line.strip()]
+    if len(links) > 6:
+        raise ValueError("静止画は6個まで登録できます。共有リンクを6個以内にしてください。")
+    return ",".join(links)
 
 def carry_previous_issue(widget_key, source_key):
     # クリック時点の前回欄を読む。保存前の編集内容もそのまま引き継ぐ。
@@ -593,18 +625,9 @@ with tab_new:
         value=parse_optional_date(previous["lesson_date"]) if previous else None,
         key=f"new_previous_date_{previous_key}",
     )
-    previous_issues = ""
-    previous_address = st.text_area(
-        "アドレス", value=previous_issue_value(previous, "address"),
-        key=f"new_previous_address_{previous_key}",
-    )
-    previous_backswing = st.text_area(
-        "バックスイング", value=previous_issue_value(previous, "backswing"),
-        key=f"new_previous_backswing_{previous_key}",
-    )
-    previous_downswing = st.text_area(
-        "ダウンスイング", value=previous_issue_value(previous, "downswing"),
-        key=f"new_previous_downswing_{previous_key}",
+    previous_issues = st.text_area(
+        "前回の課題・問題点", value=previous_issue_value(previous),
+        key=f"new_previous_issues_{previous_key}", height=180,
     )
     if previous:
         st.caption("直前のレッスンで記入した問題点を表示しています。必要に応じて書き直せます。")
@@ -621,61 +644,35 @@ with tab_new:
     target_goal = ""
     evaluation_note = ""
     st.markdown("### ■ 今回の課題・問題点")
-    current_address_key = f"new_current_address_{previous_key}"
+    current_issues_key = f"new_current_issues_{previous_key}"
     issue_col, carry_col = st.columns([4, 1])
     with issue_col:
-        current_address = st.text_area(
-            "アドレス",
-            key=current_address_key,
+        current_issues = st.text_area(
+            "今回の課題・問題点", key=current_issues_key, height=180,
         )
     with carry_col:
         st.button(
-            "前回の内容を引き継ぐ", key=f"carry_address_{previous_key}",
-            type="primary",
-            on_click=carry_previous_issue,
-            args=(current_address_key, f"new_previous_address_{previous_key}"),
-        )
-    current_backswing_key = f"new_current_backswing_{previous_key}"
-    issue_col, carry_col = st.columns([4, 1])
-    with issue_col:
-        current_backswing = st.text_area(
-            "バックスイング",
-            key=current_backswing_key,
-        )
-    with carry_col:
-        st.button(
-            "前回の内容を引き継ぐ", key=f"carry_backswing_{previous_key}",
-            type="primary",
-            on_click=carry_previous_issue,
-            args=(current_backswing_key, f"new_previous_backswing_{previous_key}"),
-        )
-    current_downswing_key = f"new_current_downswing_{previous_key}"
-    issue_col, carry_col = st.columns([4, 1])
-    with issue_col:
-        current_downswing = st.text_area(
-            "ダウンスイング",
-            key=current_downswing_key,
-        )
-    with carry_col:
-        st.button(
-            "前回の内容を引き継ぐ", key=f"carry_downswing_{previous_key}",
-            type="primary",
-            on_click=carry_previous_issue,
-            args=(current_downswing_key, f"new_previous_downswing_{previous_key}"),
+            "前回の内容を引き継ぐ", key=f"carry_issues_{previous_key}",
+            type="primary", on_click=carry_previous_issue,
+            args=(current_issues_key, f"new_previous_issues_{previous_key}"),
         )
 
     st.markdown("---")
     st.markdown("### ■ Google ドライブ共有リンク登録")
     st.caption("※共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。")
     
-    u_col1, u_col2 = st.columns(2)
-    with u_col1:
-        v1_url = st.text_input("🎥 動画 1 共有リンク", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v1_url_{fk}")
-    with u_col2:
-        v2_url = st.text_input("🎥 動画 2 共有リンク", value="", placeholder="https://drive.google.com/file/d/.../view", key=f"new_v2_url_{fk}")
+    video_urls = []
+    video_cols = st.columns(2)
+    for number in range(1, 5):
+        with video_cols[(number - 1) % 2]:
+            video_urls.append(st.text_input(
+                f"🎥 動画 {number} 共有リンク", value="",
+                placeholder="https://drive.google.com/file/d/.../view",
+                key=f"new_v{number}_url_{fk}",
+            ))
 
     drive_imgs_input = st.text_area(
-        "📷 静止画 共有リンク（複数ある場合は改行して入力）",
+        "📷 静止画 共有リンク（6個まで・改行して入力）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
         key=f"new_drive_imgs_{fk}"
     )
@@ -691,16 +688,14 @@ with tab_new:
         try:
             if lesson_date is None:
                 raise ValueError("レッスン受講日を選択してください。")
-            clean_v1 = clean_drive_url(v1_url)
-            clean_v2 = clean_drive_url(v2_url)
-            drive_imgs_clean = ",".join([clean_drive_url(line) for line in drive_imgs_input.splitlines() if line.strip()])
+            clean_videos = [clean_drive_url(url) for url in video_urls]
+            drive_imgs_clean = clean_image_links(drive_imgs_input)
             
             save_lesson(
                 selected_id, lesson_date, new_coach_val,
                 target_goal, lesson_practice, evaluation_note,
-                clean_v1, clean_v2, drive_imgs_clean, previous_issues, previous_check_date,
-                previous_address, previous_backswing, previous_downswing,
-                current_address, current_backswing, current_downswing
+                clean_videos[0], clean_videos[1], drive_imgs_clean, previous_issues, previous_check_date,
+                current_issues=current_issues, v3_url=clean_videos[2], v4_url=clean_videos[3]
             )
             
             st.session_state.form_reset_key += 1
@@ -730,8 +725,7 @@ with tab_history:
             r_target_goal = rec.get("target_goal") or ""
             r_lesson_practice = rec.get("lesson_practice") or ""
             r_eval_note = rec.get("evaluation_note") or ""
-            r_v1_url = rec.get("v1_url") or ""
-            r_v2_url = rec.get("v2_url") or ""
+            r_video_urls = [rec.get(f"v{number}_url") or "" for number in range(1, 5)]
             r_drive_images = rec.get("drive_images") or ""
             
             coach_badge_title = f" ｜ 担当: {r_coach_name}" if r_coach_name else ""
@@ -745,92 +739,60 @@ with tab_history:
                     st.markdown('<div style="color:#888; font-size:13px; margin-bottom:8px;">🏌️‍♂️ 担当コーチ: （未指定）</div>', unsafe_allow_html=True)
 
                 previous = get_previous_lesson(selected_id, r_date, r_id)
-                r_previous_issues = rec.get("previous_issues")
+                r_previous_issues = combined_issues(rec, "previous")
                 r_previous_date = rec.get("previous_check_date")
-                # 変更前の記録では、直前のレッスンから初期値を補う。
-                if r_previous_issues is None:
-                    r_previous_issues = (previous.get("target_goal") or "") if previous else ""
+                if rec.get("previous_issues") is None and not r_previous_issues:
+                    r_previous_issues = previous_issue_value(previous)
                 if r_previous_date is None:
                     r_previous_date = previous["lesson_date"] if previous else ""
                 st.markdown("**📌 前回の課題・問題点:**")
                 st.caption(f"直前のレッスン（チェック日）：{r_previous_date or '未記入'}")
-                for label, field in (
-                    ("アドレス", "previous_address"),
-                    ("バックスイング", "previous_backswing"),
-                    ("ダウンスイング", "previous_downswing"),
-                ):
-                    st.markdown(f"**{label}**")
-                    st.markdown(render_text_box(rec.get(field) or "", "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
+                st.markdown(render_text_box(r_previous_issues, "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
 
                 st.markdown("### ■ 今回の練習内容")
                 st.markdown(render_text_box(r_lesson_practice, "blue", text_color="#000080"), unsafe_allow_html=True)
                 st.markdown("### ■ 今回の課題・問題点")
-                for label, field in (
-                    ("アドレス", "current_address"),
-                    ("バックスイング", "current_backswing"),
-                    ("ダウンスイング", "current_downswing"),
-                ):
-                    st.markdown(f"**{label}**")
-                    st.markdown(render_text_box(rec.get(field) or "", "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
+                st.markdown(render_text_box(combined_issues(rec, "current"), "blue", text_color="#cc0000", empty_label=""), unsafe_allow_html=True)
 
                 # --- Android / iPhone / PC共通 動画・静止画 再生カード ---
-                has_v1 = bool(r_v1_url and r_v1_url.startswith("http"))
-                has_v2 = bool(r_v2_url and r_v2_url.startswith("http"))
+                available_videos = [(number, url) for number, url in enumerate(r_video_urls, 1) if url.startswith("http")]
                 drive_imgs_list = [u.strip() for u in r_drive_images.split(",") if u.strip() and u.strip().startswith("http")]
 
-                if has_v1 or has_v2 or drive_imgs_list:
+                if available_videos or drive_imgs_list:
                     st.markdown("---")
                     st.markdown("### 🎬 スイング動画・静止画")
-                    
-                    if has_v1 or has_v2:
-                        v_col1, v_col2 = st.columns(2)
-                        
-                        # 動画1
-                        with v_col1:
-                            if has_v1:
-                                st.markdown("""
+                    if available_videos:
+                        video_cols = st.columns(2)
+                        for idx, (number, url) in enumerate(available_videos):
+                            with video_cols[idx % 2]:
+                                st.markdown(f"""
                                 <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 1 </div>
+                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 {number}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                
-                                render_video_links(r_v1_url, 1)
-
-                        # 動画2
-                        with v_col2:
-                            if has_v2:
-                                st.markdown("""
-                                <div style="background:#f1f5f9; border:1px solid #cbd5e1; border-radius:10px; padding:12px; text-align:center; margin-bottom:6px;">
-                                    <div style="font-size:22px; margin-bottom:2px;">🎥</div>
-                                    <div style="font-weight:bold; font-size:14px; color:#1e293b;">スイング動画 2 </div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                render_video_links(r_v2_url, 2)
-
-                    if has_v1 or has_v2:
+                                render_video_links(url, number)
                         st.caption("動画が開かない場合は、共有権限とGoogleドライブ側の動画処理状況を確認してください。")
 
                     # 静止画
                     if drive_imgs_list:
                         st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
                         st.caption("📷 静止画・解析データ:")
-                        num_img_cols = min(len(drive_imgs_list), 4)
+                        num_img_cols = min(len(drive_imgs_list), 3)
                         img_cols = st.columns(num_img_cols)
                         for idx, img_url in enumerate(drive_imgs_list):
                             with img_cols[idx % num_img_cols]:
                                 st.markdown(f"""
                                 <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px; text-align:center; margin-bottom:6px;">
                                     <div style="font-size:18px;">🖼️</div>
-                                    <div style="font-weight:bold; font-size:13px; color:#334155;">静止画 {idx+1}</div>
+                                    <div style="font-weight:bold; font-size:13px; color:#334155;">画像 {idx+1}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 img_fid = get_drive_file_id(img_url)
                                 zoom_url = clean_drive_url(img_url) if img_fid else img_url
                                 with st.container(key=f"image_zoom_{r_id}_{idx}"):
                                     st.link_button("🔍 拡大表示", zoom_url, use_container_width=True, type="primary")
-                                render_fullscreen_preview(img_url, f"静止画 {idx + 1}", height=300)
+                                render_fullscreen_preview(img_url, f"画像 {idx + 1}", height=300)
 
                 st.markdown("---")
                 
@@ -855,18 +817,9 @@ with tab_history:
                         value=parse_optional_date(r_previous_date),
                         key=f"ed_previous_date_{r_id}_{rf_k}",
                     )
-                    edit_previous_issues = r_previous_issues
-                    edit_previous_address = st.text_area(
-                        "アドレス", value=rec.get("previous_address") or "",
-                        key=f"ed_previous_address_{r_id}_{rf_k}",
-                    )
-                    edit_previous_backswing = st.text_area(
-                        "バックスイング", value=rec.get("previous_backswing") or "",
-                        key=f"ed_previous_backswing_{r_id}_{rf_k}",
-                    )
-                    edit_previous_downswing = st.text_area(
-                        "ダウンスイング", value=rec.get("previous_downswing") or "",
-                        key=f"ed_previous_downswing_{r_id}_{rf_k}",
+                    edit_previous_issues = st.text_area(
+                        "前回の課題・問題点", value=r_previous_issues,
+                        key=f"ed_previous_issues_{r_id}_{rf_k}", height=180,
                     )
                     st.markdown("### ■ 今回の練習内容")
                     edit_lesson_practice = st.text_area(
@@ -876,60 +829,34 @@ with tab_history:
                     edit_target_goal = r_target_goal
                     edit_eval_note = r_eval_note
                     st.markdown("### ■ 今回の課題・問題点")
-                    edit_current_address_key = f"ed_current_address_{r_id}_{rf_k}"
+                    edit_current_issues_key = f"ed_current_issues_{r_id}_{rf_k}"
                     issue_col, carry_col = st.columns([4, 1])
                     with issue_col:
-                        edit_current_address = st.text_area(
-                            "アドレス", value=rec.get("current_address") or "",
-                            key=edit_current_address_key,
+                        edit_current_issues = st.text_area(
+                            "今回の課題・問題点", value=combined_issues(rec, "current"),
+                            key=edit_current_issues_key, height=180,
                         )
                     with carry_col:
                         st.button(
-                            "前回の内容を引き継ぐ", key=f"ed_carry_address_{r_id}_{rf_k}",
-                            type="primary",
-                            on_click=carry_previous_issue,
-                            args=(edit_current_address_key, f"ed_previous_address_{r_id}_{rf_k}"),
-                        )
-                    edit_current_backswing_key = f"ed_current_backswing_{r_id}_{rf_k}"
-                    issue_col, carry_col = st.columns([4, 1])
-                    with issue_col:
-                        edit_current_backswing = st.text_area(
-                            "バックスイング", value=rec.get("current_backswing") or "",
-                            key=edit_current_backswing_key,
-                        )
-                    with carry_col:
-                        st.button(
-                            "前回の内容を引き継ぐ", key=f"ed_carry_backswing_{r_id}_{rf_k}",
-                            type="primary",
-                            on_click=carry_previous_issue,
-                            args=(edit_current_backswing_key, f"ed_previous_backswing_{r_id}_{rf_k}"),
-                        )
-                    edit_current_downswing_key = f"ed_current_downswing_{r_id}_{rf_k}"
-                    issue_col, carry_col = st.columns([4, 1])
-                    with issue_col:
-                        edit_current_downswing = st.text_area(
-                            "ダウンスイング", value=rec.get("current_downswing") or "",
-                            key=edit_current_downswing_key,
-                        )
-                    with carry_col:
-                        st.button(
-                            "前回の内容を引き継ぐ", key=f"ed_carry_downswing_{r_id}_{rf_k}",
-                            type="primary",
-                            on_click=carry_previous_issue,
-                            args=(edit_current_downswing_key, f"ed_previous_downswing_{r_id}_{rf_k}"),
+                            "前回の内容を引き継ぐ", key=f"ed_carry_issues_{r_id}_{rf_k}",
+                            type="primary", on_click=carry_previous_issue,
+                            args=(edit_current_issues_key, f"ed_previous_issues_{r_id}_{rf_k}"),
                         )
 
                     st.markdown("---")
                     st.markdown("**🎬 Google ドライブ共有リンクの変更・追加:**")
-                    ed_u1, ed_u2 = st.columns(2)
-                    with ed_u1:
-                        edit_v1_url = st.text_input("動画 1 リンク", value=r_v1_url, key=f"ed_v1_url_{r_id}_{rf_k}")
-                    with ed_u2:
-                        edit_v2_url = st.text_input("動画 2 リンク", value=r_v2_url, key=f"ed_v2_url_{r_id}_{rf_k}")
+                    edit_video_urls = []
+                    edit_video_cols = st.columns(2)
+                    for number in range(1, 5):
+                        with edit_video_cols[(number - 1) % 2]:
+                            edit_video_urls.append(st.text_input(
+                                f"動画 {number} リンク", value=r_video_urls[number - 1],
+                                key=f"ed_v{number}_url_{r_id}_{rf_k}",
+                            ))
 
                     existing_drive_imgs_text = "\n".join(r_drive_images.split(",")) if r_drive_images else ""
                     edit_drive_imgs_input = st.text_area(
-                        "📷 静止画リンク（改行で区切って入力）",
+                        "📷 静止画リンク（6個まで・改行で区切って入力）",
                         value=existing_drive_imgs_text,
                         key=f"ed_drive_imgs_{r_id}_{rf_k}"
                     )
@@ -938,16 +865,14 @@ with tab_history:
                     with btn_c1:
                         if st.button("💾 日付・修正内容を保存する", key=f"btn_update_{r_id}_{rf_k}", type="primary"):
                             try:
-                                clean_ed_v1 = clean_drive_url(edit_v1_url)
-                                clean_ed_v2 = clean_drive_url(edit_v2_url)
-                                clean_ed_imgs = ",".join([clean_drive_url(line) for line in edit_drive_imgs_input.splitlines() if line.strip()])
+                                clean_ed_videos = [clean_drive_url(url) for url in edit_video_urls]
+                                clean_ed_imgs = clean_image_links(edit_drive_imgs_input)
 
                                 update_lesson(
                                     r_id, edit_date, edit_coach_val, 
                                     edit_target_goal, edit_lesson_practice, edit_eval_note, 
-                                    clean_ed_v1, clean_ed_v2, clean_ed_imgs, edit_previous_issues, edit_previous_date,
-                                    edit_previous_address, edit_previous_backswing, edit_previous_downswing,
-                                    edit_current_address, edit_current_backswing, edit_current_downswing
+                                    clean_ed_videos[0], clean_ed_videos[1], clean_ed_imgs, edit_previous_issues, edit_previous_date,
+                                    current_issues=edit_current_issues, v3_url=clean_ed_videos[2], v4_url=clean_ed_videos[3]
                                 )
                                 
                                 st.session_state.refresh_key += 1
