@@ -73,6 +73,23 @@ def new_record_id():
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f") + "_" + uuid4().hex
 
 
+def normalized_headers(row):
+    # Sheets APIが返す右端の空セルと、見出しの前後の空白を許容する。
+    result = [str(value).strip() for value in row]
+    while result and not result[-1]:
+        result.pop()
+    return result
+
+
+def header_error(name, row):
+    actual = normalized_headers(row)
+    expected = SCHEMAS[name]
+    shown = " / ".join(actual[:len(expected) + 2]) or "（空欄）"
+    return (f"{name} シートの見出しを確認してください。"
+            f"\n期待する見出し：{' / '.join(expected)}"
+            f"\n読み込んだ見出し：{shown}")
+
+
 class SheetsStore:
     def __init__(self, workbook):
         self.book = workbook
@@ -87,18 +104,24 @@ class SheetsStore:
                 if sheet is None:
                     sheet = self.book.add_worksheet(title=name, rows=1000, cols=len(headers))
                 values = sheet.get_all_values()
-                if not values:
+                if not any(str(cell).strip() for row in values for cell in row):
+                    # 空セルだけの配列が返っても、空シートとして初期化する。
                     sheet.update(range_name="A1", values=[headers], raw=True)
-                elif values[0] != headers:
-                    raise StorageError(f"{name} シートの見出しが異なります。専用の空のスプレッドシートを指定してください。")
+                else:
+                    actual = normalized_headers(values[0])
+                    if len(actual) == 1 and actual[0].split() == headers:
+                        # タブ区切りの見出しがA1の1セルに入った場合だけ安全に展開。
+                        sheet.update(range_name="A1", values=[headers], raw=True)
+                    elif actual != headers:
+                        raise StorageError(header_error(name, values[0]))
                 self.sheets[name] = sheet
 
     def records(self, name, fresh=False):
         if fresh or name not in self.cache:
             values = self.sheets[name].get_all_values()
             headers = SCHEMAS[name]
-            if not values or values[0] != headers:
-                raise StorageError(f"{name} シートの見出しが変更されています。")
+            if not values or normalized_headers(values[0]) != headers:
+                raise StorageError(header_error(name, values[0] if values else []))
             records = []
             for row_number, row in enumerate(values[1:], 2):
                 row = row + [""] * (len(headers) - len(row))
@@ -167,6 +190,8 @@ def connect_sheets():
         return store
     except StorageError as error:
         st.error(str(error))
+        st.caption(f"現在の接続先：{workbook.title}")
+        st.link_button("現在の保存先スプレッドシートを開く", f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
         st.stop()
     except Exception:
         st.error("Googleスプレッドシートに接続できません。シートID・APIの有効化・サービスアカウントの編集権限を確認してください。接続が直るまで保存はできません。")
