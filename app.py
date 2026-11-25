@@ -38,6 +38,39 @@ textarea[aria-label="今回の練習内容"] {
     background-color: #0052a3 !important;
     border-color: #0052a3 !important;
 }
+
+.stMain.lesson-scroll-main {
+    margin-right: 28px;
+    scrollbar-width: none;
+}
+.stMain.lesson-scroll-main::-webkit-scrollbar {
+    display: none;
+}
+.lesson-scrollbar {
+    position: fixed;
+    right: 0;
+    width: 28px;
+    z-index: 20;
+    background: #e2e8f0;
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+}
+.lesson-scrollbar > div {
+    box-sizing: border-box;
+    width: 100%;
+    border: 2px solid #e2e8f0;
+    border-radius: 12px;
+    background: #56677b;
+    cursor: grab;
+}
+.lesson-scrollbar:active > div {
+    cursor: grabbing;
+}
+.lesson-scrollbar:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: -2px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -678,6 +711,107 @@ def clear_lesson_draft(scope):
     if initial_draft.get("active") == scope:
         initial_draft["active"] = ""
 
+
+# 端末のスクロールバー表示設定にかかわらず、右端でドラッグできるようにする。
+scrollbar = st.components.v2.component(
+    "lesson_scrollbar",
+    html="<span hidden></span>",
+    js=r"""
+export default function () {
+  const main = document.querySelector('[data-testid="stMain"]');
+  if (!main) return;
+
+  const bar = document.createElement("div");
+  const thumb = document.createElement("div");
+  bar.className = "lesson-scrollbar";
+  bar.hidden = true;
+  bar.tabIndex = 0;
+  bar.setAttribute("role", "scrollbar");
+  bar.setAttribute("aria-label", "カルテの縦スクロール");
+  bar.setAttribute("aria-orientation", "vertical");
+  bar.setAttribute("aria-valuemin", "0");
+  if (!main.id) main.id = "lesson-scroll-content";
+  bar.setAttribute("aria-controls", main.id);
+  bar.append(thumb);
+  document.body.append(bar);
+  main.classList.add("lesson-scroll-main");
+
+  let maximum = 0;
+  let travel = 0;
+  let grab = 0;
+  function updatePosition() {
+    const top = Math.max(0, Math.min(maximum, main.scrollTop));
+    thumb.style.transform = `translateY(${maximum ? top / maximum * travel : 0}px)`;
+    bar.setAttribute("aria-valuenow", String(Math.round(top)));
+  }
+
+  function layout() {
+    const bounds = main.getBoundingClientRect();
+    const header = document.querySelector('[data-testid="stHeader"]');
+    const top = Math.max(bounds.top, header?.getBoundingClientRect().bottom ?? 0);
+    const height = Math.max(0, Math.min(bounds.bottom, window.innerHeight) - top);
+    maximum = Math.max(0, main.scrollHeight - main.clientHeight);
+    bar.hidden = maximum < 2 || height < 40;
+    bar.style.top = `${top}px`;
+    bar.style.height = `${height}px`;
+    const thumbHeight = Math.min(height, Math.max(44, height * main.clientHeight / (main.scrollHeight || 1)));
+    travel = height - thumbHeight;
+    thumb.style.height = `${thumbHeight}px`;
+    bar.setAttribute("aria-valuemax", String(Math.round(maximum)));
+    updatePosition();
+  }
+
+  function moveTo(event) {
+    if (travel <= 0) return;
+    const offset = event.clientY - bar.getBoundingClientRect().top - grab;
+    main.scrollTop = Math.max(0, Math.min(maximum, offset / travel * maximum));
+  }
+
+  bar.addEventListener("pointerdown", event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const bounds = thumb.getBoundingClientRect();
+    grab = event.target === thumb ? event.clientY - bounds.top : bounds.height / 2;
+    bar.setPointerCapture(event.pointerId);
+    moveTo(event);
+  });
+  bar.addEventListener("pointermove", event => {
+    if (bar.hasPointerCapture(event.pointerId)) moveTo(event);
+  });
+  bar.addEventListener("wheel", event => {
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? main.clientHeight : 1;
+    main.scrollTop += event.deltaY * unit;
+  }, {passive: false});
+  bar.addEventListener("keydown", event => {
+    const page = main.clientHeight;
+    const positions = {
+      ArrowUp: main.scrollTop - 40, ArrowDown: main.scrollTop + 40,
+      PageUp: main.scrollTop - page, PageDown: main.scrollTop + page,
+      Home: 0, End: maximum,
+    };
+    if (!Object.hasOwn(positions, event.key)) return;
+    event.preventDefault();
+    main.scrollTop = positions[event.key];
+  });
+
+  const sizes = new ResizeObserver(layout);
+  sizes.observe(main);
+  const content = main.querySelector('[data-testid="stMainBlockContainer"]');
+  if (content) sizes.observe(content);
+  main.addEventListener("scroll", updatePosition, {passive: true});
+  window.addEventListener("resize", layout);
+  layout();
+  return () => {
+    sizes.disconnect();
+    main.removeEventListener("scroll", updatePosition);
+    window.removeEventListener("resize", layout);
+    main.classList.remove("lesson-scroll-main");
+    bar.remove();
+  };
+}
+""",
+)
+scrollbar(key="lesson_scrollbar", height=0)
 
 # --- 画面構成 ---
 st.title("スイング・チェックシート")
