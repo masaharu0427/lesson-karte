@@ -488,13 +488,14 @@ def clean_image_links(text):
         raise ValueError("静止画は6個まで登録できます。共有リンクを6個以内にしてください。")
     return ",".join(links)
 
-def carry_previous_issue(widget_key, source_key):
+def carry_previous_issue(widget_key, source_key, scope):
     # クリック時点の前回欄を読む。保存前の編集内容もそのまま引き継ぐ。
     content = st.session_state.get(source_key, "")
     if not content.strip():
         st.session_state["carry_notice"] = "引き継ぐ前回の内容がありません。前回の課題・問題点の欄に記入してから押してください。"
         return
     st.session_state[widget_key] = content
+    st.session_state["draft_carry"] = [scope, "current_issues", content]
 
 def parse_optional_date(value):
     try:
@@ -508,7 +509,7 @@ def format_japanese_date(value):
     return parsed.strftime("%Y年%m月%d日") if parsed else "未記入"
 
 
-def japanese_date_input(label, value=None, key=None):
+def japanese_date_input(label, value=None, key=None, scope=None, field="date"):
     """年・月・日を日本語で選択し、有効なdateまたは未入力のNoneを返す。"""
     initial = value if isinstance(value, date) else parse_optional_date(value)
     today = date.today()
@@ -518,14 +519,14 @@ def japanese_date_input(label, value=None, key=None):
     year_key, month_key, day_key = f"{key}_year", f"{key}_month", f"{key}_day"
     year_col, month_col, day_col = st.columns(3)
     with year_col:
-        year = st.selectbox(
+        year = draft_widget(st.selectbox, scope, f"{field}_year",
             f"{label}：年", year_options,
             index=year_options.index(initial.year) if initial else 0,
             format_func=lambda n: f"{n:04d}年" if n is not None else "年を選択",
             key=year_key, label_visibility="collapsed",
         )
     with month_col:
-        month = st.selectbox(
+        month = draft_widget(st.selectbox, scope, f"{field}_month",
             f"{label}：月", range(1, 13), index=base.month - 1,
             format_func=lambda n: f"{n:02d}月", key=month_key,
             label_visibility="collapsed",
@@ -535,7 +536,7 @@ def japanese_date_input(label, value=None, key=None):
     if day_key in st.session_state and st.session_state[day_key] > last_day:
         st.session_state[day_key] = last_day
     with day_col:
-        day = st.selectbox(
+        day = draft_widget(st.selectbox, scope, f"{field}_day",
             f"{label}：日", range(1, last_day + 1),
             index=min(base.day, last_day) - 1,
             format_func=lambda n: f"{n:02d}日", key=day_key,
@@ -573,8 +574,130 @@ def render_text_box(content, box_type="blue", text_color="#222", empty_label="�
         margin-bottom: 12px;
     ">{escape(str(content))}</div>'''
 
+# 下書きは同じブラウザタブ内に保存し、シート保存の成功後に消す。
+draft_bridge = st.components.v2.component(
+    "lesson_draft",
+    html="<span hidden></span>",
+    js=r"""
+export default function ({data, setStateValue}) {
+  const key = "lesson-karte-draft-v1";
+  let draft = {forms: {}, student: "", active: ""};
+  try {
+    const stored = sessionStorage.getItem(key);
+    if (stored) draft = JSON.parse(stored);
+  } catch {}
+  const write = () => {
+    try { sessionStorage.setItem(key, JSON.stringify(draft)); }
+    catch {
+      if (!window.lessonDraftStorageError) {
+        window.lessonDraftStorageError = true;
+        setStateValue("storage_error", true);
+      }
+    }
+  };
+  if (data.loading) {
+    setStateValue("initial", draft);
+    return;
+  }
+
+  for (const scope of data.clear) {
+    delete draft.forms[scope];
+    if (draft.active === scope) draft.active = "";
+  }
+  draft.student = data.student;
+  const capture = (scope, field, value) => {
+    (draft.forms[scope] ??= {})[field] = value;
+    draft.active = scope;
+  };
+  const previous = window.lessonDraftChoices || {};
+  for (const [scope, choices] of Object.entries(data.choices)) {
+    for (const [field, value] of Object.entries(choices)) {
+      if (!data.clear.includes(scope) && previous[scope] &&
+          Object.hasOwn(previous[scope], field) && previous[scope][field] !== value) {
+        capture(scope, field, value);
+      }
+    }
+  }
+  window.lessonDraftChoices = data.choices;
+  if (data.carry) capture(...data.carry);
+  write();
+
+  function onInput(event) {
+    if (!["TEXTAREA", "INPUT"].includes(event.target.tagName)) return;
+    for (let el = event.target; el; el = el.parentElement) {
+      for (const klass of el.classList) {
+        if (!klass.startsWith("st-key-")) continue;
+        const mapping = data.text[klass.slice(7)];
+        if (!mapping) continue;
+        capture(...mapping, event.target.value);
+        write();
+        return;
+      }
+    }
+  }
+  document.addEventListener("input", onInput, true);
+  return () => document.removeEventListener("input", onInput, true);
+}
+""",
+)
+
+
+def mount_draft(data):
+    # 同じコンポーネントから読み込み完了と保存失敗を受け取る。
+    draft_bridge(
+        key="lesson_draft_bridge", data=data, height=0,
+        on_initial_change=lambda: None, on_storage_error_change=lambda: None,
+    )
+
+
+def draft_widget(widget, scope, field, label, *args, **kwargs):
+    key = kwargs["key"]
+    saved = initial_draft.get("forms", {}).get(scope, {})
+    # 各ウィジェットに対して同じ下書きの読み直しは一度だけ。
+    if key not in draft_loaded:
+        draft_loaded.add(key)
+        restored = saved.get(field)
+        if isinstance(restored, str) and widget in (st.text_input, st.text_area):
+            kwargs["value"] = restored
+        elif widget == st.selectbox and field in saved:
+            options = list(args[0] if args else kwargs["options"])
+            if restored in options:
+                kwargs["index"] = options.index(restored)
+
+    result = widget(label, *args, **kwargs)
+    if widget == st.selectbox:
+        draft_data["choices"].setdefault(scope, {})[field] = result
+    else:
+        draft_data["text"][key] = [scope, field]
+    return result
+
+
+def clear_lesson_draft(scope):
+    st.session_state.setdefault("draft_clear", []).append(scope)
+    initial_draft.get("forms", {}).pop(scope, None)
+    if initial_draft.get("active") == scope:
+        initial_draft["active"] = ""
+
+
 # --- 画面構成 ---
 st.title("スイング・チェックシート")
+draft_slot = st.empty()
+bridge_state = st.session_state.get("lesson_draft_bridge", {})
+initial_draft = bridge_state.get("initial")
+if initial_draft is None:
+    with draft_slot:
+        mount_draft({"loading": True})
+    st.stop()
+if bridge_state.get("storage_error"):
+    st.warning("このタブに下書きを保存できません。入力した内容は保存ボタンで登録してください。")
+
+draft_loaded = st.session_state.setdefault("draft_loaded", set())
+draft_data = {
+    "loading": False, "student": "", "text": {}, "choices": {},
+    "clear": st.session_state.pop("draft_clear", []),
+    "carry": st.session_state.pop("draft_carry", None),
+}
+
 if "carry_notice" in st.session_state:
     st.info(st.session_state.pop("carry_notice"))
 if "management_notice" in st.session_state:
@@ -607,6 +730,11 @@ student_dict = {
 student_options = [""] + list(student_dict.keys())
 if st.session_state.get("selected_student_name_blank", "") not in student_options:
     st.session_state["selected_student_name_blank"] = ""
+if "selected_student_name_blank" not in st.session_state:
+    st.session_state["selected_student_name_blank"] = next(
+        (name for name, student in student_dict.items() if str(student["id"]) == initial_draft.get("student")),
+        "",
+    )
 selected_name = st.sidebar.selectbox(
     "受講者を選択", options=student_options, index=0,
     key="selected_student_name_blank", disabled=not raw_students,
@@ -626,6 +754,7 @@ with st.sidebar.expander("＋ 新規生徒を登録", expanded=False):
 if selected_name:
     curr_student = student_dict[selected_name]
     selected_id = curr_student["id"]
+    draft_data["student"] = str(selected_id)
 
     with st.sidebar.expander("👤 生徒プロフィールを編集", expanded=False):
         for key, initial in (
@@ -699,11 +828,20 @@ st.sidebar.button("最新データを読み込む", key="reload_sheet_data", on_
 
 if not selected_name:
     st.tabs(["📝 新規スイングチェック入力", "📂 過去のチェックシート・日付変更・編集"])
+    with draft_slot:
+        mount_draft(draft_data)
     st.stop()
 
 st.caption(f"**受講者:** {selected_name} 様 ｜ **ハンデ/平均:** {curr_student.get('handicap') or '未設定'} ｜ **長期目標:** {curr_student.get('goal') or '未設定'}")
 
-tab_new, tab_history = st.tabs(["📝 新規スイングチェック入力", "📂 過去のチェックシート・日付変更・編集"])
+new_scope = f"new:{selected_id}"
+edit_scope_prefix = f"edit:{selected_id}:"
+active_draft = initial_draft.get("active", "")
+history_tab = "📂 過去のチェックシート・日付変更・編集"
+tab_new, tab_history = st.tabs(
+    ["📝 新規スイングチェック入力", history_tab],
+    default=history_tab if active_draft.startswith(edit_scope_prefix) else None,
+)
 
 # ================================
 # タブ1: 新規入力フォーム
@@ -715,10 +853,10 @@ with tab_new:
     
     top_col1, top_col2 = st.columns(2)
     with top_col1:
-        lesson_date = japanese_date_input("📅 チェック日", value=None, key=f"new_date_{fk}")
+        lesson_date = japanese_date_input("📅 チェック日", value=None, key=f"new_date_{fk}", scope=new_scope)
     with top_col2:
         coach_options = [""] + coach_list
-        selected_coach_new = st.selectbox("🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
+        selected_coach_new = draft_widget(st.selectbox, new_scope, "coach", "🏌️️‍♂️ 担当コーチ", options=coach_options, index=0, key=f"new_coach_{fk}")
         new_coach_val = selected_coach_new
 
     if lesson_date:
@@ -731,9 +869,9 @@ with tab_new:
     previous_check_date = japanese_date_input(
         "📅 前回のチェック日",
         value=parse_optional_date(previous["lesson_date"]) if previous else None,
-        key=f"new_previous_date_{previous_key}",
+        key=f"new_previous_date_{previous_key}", scope=new_scope, field="previous_date",
     )
-    previous_issues = st.text_area(
+    previous_issues = draft_widget(st.text_area, new_scope, "previous_issues",
         "前回の課題・問題点", value=previous_issue_value(previous),
         key=f"new_previous_issues_{previous_key}", height=180,
     )
@@ -745,24 +883,24 @@ with tab_new:
 
     st.markdown("---")
     st.markdown("### ■ 今回の練習内容")
-    lesson_practice = st.text_area(
+    lesson_practice = draft_widget(st.text_area, new_scope, "practice",
         "今回の練習内容", placeholder="今回行った練習やドリルを記入してください。",
         key=f"new_lesson_practice_{fk}",
     )
     target_goal = ""
     evaluation_note = ""
     st.markdown("### ■ 今回の課題・問題点")
-    current_issues_key = f"new_current_issues_{previous_key}"
+    current_issues_key = f"new_current_issues_{fk}"
     issue_col, carry_col = st.columns([4, 1])
     with issue_col:
-        current_issues = st.text_area(
+        current_issues = draft_widget(st.text_area, new_scope, "current_issues",
             "今回の課題・問題点", key=current_issues_key, height=180,
         )
     with carry_col:
         st.button(
             "前回の内容を引き継ぐ", key=f"carry_issues_{previous_key}",
             type="primary", on_click=carry_previous_issue,
-            args=(current_issues_key, f"new_previous_issues_{previous_key}"),
+            args=(current_issues_key, f"new_previous_issues_{previous_key}", new_scope),
         )
 
     st.markdown("---")
@@ -773,13 +911,13 @@ with tab_new:
     video_cols = st.columns(2)
     for number in range(1, 5):
         with video_cols[(number - 1) % 2]:
-            video_urls.append(st.text_input(
+            video_urls.append(draft_widget(st.text_input, new_scope, f"video_{number}",
                 f"🎥 動画 {number} 共有リンク", value="",
                 placeholder="https://drive.google.com/file/d/.../view",
                 key=f"new_v{number}_url_{fk}",
             ))
 
-    drive_imgs_input = st.text_area(
+    drive_imgs_input = draft_widget(st.text_area, new_scope, "images",
         "📷 静止画 共有リンク（6個まで・改行して入力）",
         placeholder="https://drive.google.com/file/d/xxxxxxx/view?usp=sharing\nhttps://drive.google.com/file/d/yyyyyyy/view?usp=sharing",
         key=f"new_drive_imgs_{fk}"
@@ -806,6 +944,7 @@ with tab_new:
                 current_issues=current_issues, v3_url=clean_videos[2], v4_url=clean_videos[3]
             )
             
+            clear_lesson_draft(new_scope)
             st.session_state.form_reset_key += 1
             st.session_state.refresh_key += 1
             st.session_state[save_message_key] = True
@@ -828,6 +967,8 @@ with tab_history:
     else:
         for rec in records:
             r_id = rec["id"]
+            edit_scope = f"{edit_scope_prefix}{r_id}:{rec.get('revision', '')}"
+            reopen_editor = active_draft == edit_scope
             r_date = rec["lesson_date"]
             r_coach_name = rec.get("coach_name") or ""
             r_target_goal = rec.get("target_goal") or ""
@@ -840,7 +981,7 @@ with tab_history:
             expander_title = f"📅 チェック日: {format_japanese_date(r_date)}{coach_badge_title} (ID: {r_id})" + ("\u200b" * rf_k)
             edit_expander_title = f"✏️ この練習記録の内容を編集する" + ("\u200b" * rf_k)
             
-            with st.expander(expander_title, expanded=False):
+            with st.expander(expander_title, expanded=reopen_editor):
                 if r_coach_name:
                     st.markdown(f'<div style="background-color:#eef2ff; border-left:4px solid #4f46e5; padding:8px 12px; border-radius:4px; font-weight:bold; color:#312e81; margin-bottom:12px;">🏌️‍♂️ 担当コーチ: {r_coach_name}</div>', unsafe_allow_html=True)
                 else:
@@ -905,7 +1046,7 @@ with tab_history:
                 st.markdown("---")
                 
                 # 編集エリア
-                with st.expander(edit_expander_title, expanded=False):
+                with st.expander(edit_expander_title, expanded=reopen_editor):
                     try:
                         parsed_date = datetime.strptime(r_date, "%Y-%m-%d").date()
                     except ValueError:
@@ -913,24 +1054,24 @@ with tab_history:
                     
                     e_top_c1, e_top_c2 = st.columns(2)
                     with e_top_c1:
-                        edit_date = japanese_date_input("📅 チェック日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}")
+                        edit_date = japanese_date_input("📅 チェック日を変更", value=parsed_date, key=f"ed_date_{r_id}_{rf_k}", scope=edit_scope)
                     with e_top_c2:
                         edit_coach_options = ["（未選択）"] + coach_list
                         default_coach_idx = edit_coach_options.index(r_coach_name) if r_coach_name in edit_coach_options else 0
-                        chosen_coach_edit = st.selectbox("🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
+                        chosen_coach_edit = draft_widget(st.selectbox, edit_scope, "coach", "🏌️‍♂️ 担当コーチを変更", options=edit_coach_options, index=default_coach_idx, key=f"ed_coach_{r_id}_{rf_k}")
                         edit_coach_val = "" if chosen_coach_edit == "（未選択）" else chosen_coach_edit
                     
                     edit_previous_date = japanese_date_input(
                         "📅 前回のチェック日",
                         value=parse_optional_date(r_previous_date),
-                        key=f"ed_previous_date_{r_id}_{rf_k}",
+                        key=f"ed_previous_date_{r_id}_{rf_k}", scope=edit_scope, field="previous_date",
                     )
-                    edit_previous_issues = st.text_area(
+                    edit_previous_issues = draft_widget(st.text_area, edit_scope, "previous_issues",
                         "前回の課題・問題点", value=r_previous_issues,
                         key=f"ed_previous_issues_{r_id}_{rf_k}", height=180,
                     )
                     st.markdown("### ■ 今回の練習内容")
-                    edit_lesson_practice = st.text_area(
+                    edit_lesson_practice = draft_widget(st.text_area, edit_scope, "practice",
                         "今回の練習内容", value=r_lesson_practice,
                         key=f"ed_practice_{r_id}_{rf_k}",
                     )
@@ -940,7 +1081,7 @@ with tab_history:
                     edit_current_issues_key = f"ed_current_issues_{r_id}_{rf_k}"
                     issue_col, carry_col = st.columns([4, 1])
                     with issue_col:
-                        edit_current_issues = st.text_area(
+                        edit_current_issues = draft_widget(st.text_area, edit_scope, "current_issues",
                             "今回の課題・問題点", value=combined_issues(rec, "current"),
                             key=edit_current_issues_key, height=180,
                         )
@@ -948,7 +1089,7 @@ with tab_history:
                         st.button(
                             "前回の内容を引き継ぐ", key=f"ed_carry_issues_{r_id}_{rf_k}",
                             type="primary", on_click=carry_previous_issue,
-                            args=(edit_current_issues_key, f"ed_previous_issues_{r_id}_{rf_k}"),
+                            args=(edit_current_issues_key, f"ed_previous_issues_{r_id}_{rf_k}", edit_scope),
                         )
 
                     st.markdown("---")
@@ -957,13 +1098,13 @@ with tab_history:
                     edit_video_cols = st.columns(2)
                     for number in range(1, 5):
                         with edit_video_cols[(number - 1) % 2]:
-                            edit_video_urls.append(st.text_input(
+                            edit_video_urls.append(draft_widget(st.text_input, edit_scope, f"video_{number}",
                                 f"動画 {number} リンク", value=r_video_urls[number - 1],
                                 key=f"ed_v{number}_url_{r_id}_{rf_k}",
                             ))
 
                     existing_drive_imgs_text = "\n".join(r_drive_images.split(",")) if r_drive_images else ""
-                    edit_drive_imgs_input = st.text_area(
+                    edit_drive_imgs_input = draft_widget(st.text_area, edit_scope, "images",
                         "📷 静止画リンク（6個まで・改行で区切って入力）",
                         value=existing_drive_imgs_text,
                         key=f"ed_drive_imgs_{r_id}_{rf_k}"
@@ -983,6 +1124,7 @@ with tab_history:
                                     current_issues=edit_current_issues, v3_url=clean_ed_videos[2], v4_url=clean_ed_videos[3]
                                 )
                                 
+                                clear_lesson_draft(edit_scope)
                                 st.session_state.refresh_key += 1
                                 st.toast("✅ チェック内容を更新しました！")
                                 st.rerun()
@@ -993,8 +1135,13 @@ with tab_history:
                         if st.button("🗑️ チェック記録を削除", key=f"btn_del_{r_id}_{rf_k}", disabled=not confirm_delete):
                             try:
                                 delete_lesson(r_id)
+                                clear_lesson_draft(edit_scope)
                                 st.session_state.refresh_key += 1
                                 st.toast("🗑️ チェック記録を削除しました。")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ 削除に失敗しました: {e}")
+
+
+with draft_slot:
+    mount_draft(draft_data)
