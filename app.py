@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 from html import escape
 import gspread
 import threading
@@ -26,19 +25,6 @@ textarea[aria-label="今回の練習内容"] {
     color: #000080 !important;
     -webkit-text-fill-color: #000080 !important;
 }
-[class*="st-key-image_zoom_"] a {
-    background-color: #0066cc !important;
-    border: 1px solid #0066cc !important;
-    color: #ffffff !important;
-}
-[class*="st-key-image_zoom_"] a p {
-    color: #ffffff !important;
-}
-[class*="st-key-image_zoom_"] a:hover {
-    background-color: #0052a3 !important;
-    border-color: #0052a3 !important;
-}
-
 .stMain.lesson-scroll-main {
     margin-right: 28px;
     scrollbar-width: none;
@@ -263,66 +249,153 @@ def clean_drive_url(url):
         return ""
     return drive_playback_url(url)
 
-def render_fullscreen_preview(url, title, height=380):
-    if not get_drive_file_id(url):
-        return
-    preview_url = escape(drive_playback_url(url, preview=True), quote=True)
-    safe_title = escape(title, quote=True)
-    # Streamlitのコンポーネント内で、ユーザーのクリックから全画面表示を要求する。
-    markup = """
-    <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: sans-serif; }
-    #viewer { background: #111; width: 100%; height: __HEIGHT__px; }
-    #viewer:fullscreen { width: 100vw; height: 100vh; }
-    #viewer:-webkit-full-screen { width: 100vw; height: 100vh; }
-    #toolbar { height: 46px; display: flex; align-items: center; padding: 5px 8px; gap: 8px; }
-    button { background: #0066cc; color: white; border: 1px solid #0066cc;
-             border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 14px; }
-    #message { color: white; font-size: 12px; }
-    iframe { width: 100%; height: calc(100% - 46px); border: 0; display: block; background: white; }
-    </style>
-    <div id="viewer">
-      <div id="toolbar">
-        <button id="full" type="button">⛶ 全画面で見る</button>
-        <span id="message" role="status"></span>
-      </div>
-      <iframe src="__URL__" title="__TITLE__"
-        allow="fullscreen; autoplay; encrypted-media; picture-in-picture"
-        allowfullscreen webkitallowfullscreen></iframe>
+def image_sources(url):
+    """Googleドライブの閲覧ページを、画像だけを返すURLに変換する。"""
+    try:
+        parts = urlsplit(url.strip())
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return None
+    except ValueError:
+        return None
+
+    if parts.hostname != "drive.google.com":
+        return url.strip(), url.strip()
+
+    if re.search(r"(?:^|/)folders(?:/|$)", parts.path):
+        return None
+    file_id = get_drive_file_id(url)
+    if not file_id:
+        return None
+
+    params = {"id": file_id}
+    resource_key = parse_qs(parts.query).get("resourcekey", [""])[0]
+    if resource_key:
+        params["resourcekey"] = resource_key
+    thumbnail = "https://drive.google.com/thumbnail?" + urlencode(params)
+    return thumbnail + "&sz=w480", thumbnail + "&sz=w2048"
+
+
+# iframeの全画面APIを使わず、カルテ上で画像を画面いっぱいに表示する。
+image_viewer = st.components.v2.component(
+    "lesson_image_viewer",
+    html="""
+    <div class="image-card">
+      <img class="thumbnail" loading="lazy" referrerpolicy="no-referrer">
+      <p class="thumbnail-error" role="status" hidden>画像を読み込めません。画像ファイルの共有設定を確認してください。</p>
+      <button class="expand" type="button" aria-haspopup="dialog">🔍 拡大表示</button>
     </div>
-    <script>
-    const viewer = document.getElementById('viewer');
-    const button = document.getElementById('full');
-    const message = document.getElementById('message');
-    function syncButton() {
-      button.textContent = (document.fullscreenElement || document.webkitFullscreenElement)
-        ? '⛶ 全画面を終了' : '⛶ 全画面で見る';
+    <dialog aria-label="静止画の拡大表示">
+      <div class="viewer">
+        <header>
+          <span class="title"></span>
+          <button class="close" type="button" autofocus>閉じる</button>
+        </header>
+        <div class="image-stage">
+          <img class="expanded-image" referrerpolicy="no-referrer">
+          <p class="expanded-error" role="status" hidden>画像を読み込めません。画像ファイルの共有設定を確認してください。</p>
+        </div>
+      </div>
+    </dialog>
+    """,
+    css="""
+    .image-card { display: grid; gap: 8px; }
+    .thumbnail {
+      display: block; width: 100%; height: clamp(120px, 25vw, 280px);
+      object-fit: contain; background: #f1f5f9; border-radius: 8px;
     }
-    button.addEventListener('click', async () => {
-      message.textContent = '';
-      try {
-        if (document.fullscreenElement || document.webkitFullscreenElement) {
-          const exit = document.exitFullscreen || document.webkitExitFullscreen;
-          if (!exit) throw new Error('unsupported');
-          await exit.call(document);
-        } else {
-          const enter = viewer.requestFullscreen || viewer.webkitRequestFullscreen;
-          if (!enter) throw new Error('unsupported');
-          await enter.call(viewer);
-        }
-        syncButton();
-      } catch (error) {
-        message.textContent = 'このブラウザでは全画面にできません。ドライブを直接開いてください。';
+    [hidden] { display: none !important; }
+    p { margin: 0; text-align: center; font-size: 14px; }
+    button {
+      border: 1px solid #0059b3; border-radius: 6px; background: #0066cc;
+      color: white; font: inherit; min-height: 44px; padding: 6px 14px; cursor: pointer;
+    }
+    button:hover { background: #0052a3; }
+    dialog {
+      box-sizing: border-box; position: fixed; inset: 0; margin: 0; padding: 0;
+      border: 0; width: 100vw; height: 100vh; height: 100dvh;
+      max-width: none; max-height: none; background: #111827; color: white;
+    }
+    dialog::backdrop { background: #111827; }
+    .viewer {
+      box-sizing: border-box; width: 100%; height: 100%;
+      display: grid; grid-template-rows: auto minmax(0, 1fr);
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 12px; gap: 12px;
+    }
+    .image-stage { position: relative; display: grid; place-items: center; min-height: 0; }
+    .expanded-image {
+      position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain;
+    }
+    .expanded-error { padding: 0 16px; }
+    """,
+    js="""
+    export default function ({parentElement, data}) {
+      const thumbnail = parentElement.querySelector(".thumbnail");
+      const thumbnailError = parentElement.querySelector(".thumbnail-error");
+      const dialog = parentElement.querySelector("dialog");
+      const expand = parentElement.querySelector(".expand");
+      const close = parentElement.querySelector(".close");
+      const image = parentElement.querySelector(".expanded-image");
+      const expandedError = parentElement.querySelector(".expanded-error");
+      parentElement.querySelector(".title").textContent = data.title;
+      thumbnail.alt = image.alt = data.title;
+
+      function showThumbnailError() {
+        thumbnail.hidden = true;
+        thumbnailError.hidden = false;
       }
-    });
-    document.addEventListener('fullscreenchange', syncButton);
-    document.addEventListener('webkitfullscreenchange', syncButton);
-    </script>
-    """
-    markup = markup.replace("__HEIGHT__", str(height))
-    markup = markup.replace("__TITLE__", safe_title).replace("__URL__", preview_url)
-    components.html(markup, height=height + 4, scrolling=False)
+      function showExpandedError() {
+        image.hidden = true;
+        expandedError.hidden = false;
+      }
+      function openImage() {
+        expandedError.hidden = true;
+        image.hidden = false;
+        dialog.showModal();
+        image.src = data.full;
+      }
+      function closeImage() {
+        dialog.close();
+      }
+      function restoreFocus() {
+        expand.focus({preventScroll: true});
+      }
+
+      thumbnail.addEventListener("error", showThumbnailError);
+      image.addEventListener("error", showExpandedError);
+      expand.addEventListener("click", openImage);
+      close.addEventListener("click", closeImage);
+      dialog.addEventListener("close", restoreFocus);
+      thumbnail.hidden = false;
+      thumbnailError.hidden = true;
+      thumbnail.src = data.thumbnail;
+      if (thumbnail.complete && thumbnail.naturalWidth === 0) showThumbnailError();
+
+      return () => {
+        thumbnail.removeEventListener("error", showThumbnailError);
+        image.removeEventListener("error", showExpandedError);
+        expand.removeEventListener("click", openImage);
+        close.removeEventListener("click", closeImage);
+        dialog.removeEventListener("close", restoreFocus);
+        if (dialog.open) dialog.close();
+      };
+    }
+    """,
+)
+
+
+def render_image_card(url, title, key):
+    sources = image_sources(url)
+    if sources is None:
+        st.info("静止画ファイルの共有リンクを登録してください。")
+        return
+    thumbnail, full = sources
+    image_viewer(key=key, data={"title": title, "thumbnail": thumbnail, "full": full})
+
 
 # 独自のアプリ用スキームに依存しない再生ボタン
 def render_video_links(url, number):
@@ -516,9 +589,11 @@ def previous_issue_value(record):
 
 
 def clean_image_links(text):
-    links = [clean_drive_url(line) for line in text.splitlines() if line.strip()]
+    links = [line.strip() for line in text.splitlines() if line.strip()]
     if len(links) > 6:
         raise ValueError("静止画は6個まで登録できます。共有リンクを6個以内にしてください。")
+    if any(image_sources(link) is None for link in links):
+        raise ValueError("静止画欄には、画像ファイルごとの共有リンクを入力してください。")
     return ",".join(links)
 
 def carry_previous_issue(widget_key, source_key, scope):
@@ -1039,7 +1114,7 @@ with tab_new:
 
     st.markdown("---")
     st.markdown("### ■ Google ドライブ共有リンク登録")
-    st.caption("※共有設定を「リンクを知っている全員（閲覧者）」にしたリンクを貼り付けてください。")
+    st.caption("動画・静止画ごとに、ファイルの共有設定を「リンクを知っている全員（閲覧者）」にしてリンクを貼り付けてください。")
     
     video_urls = []
     video_cols = st.columns(2)
@@ -1171,11 +1246,7 @@ with tab_history:
                                     <div style="font-weight:bold; font-size:13px; color:#334155;">画像 {idx+1}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                img_fid = get_drive_file_id(img_url)
-                                zoom_url = clean_drive_url(img_url) if img_fid else img_url
-                                with st.container(key=f"image_zoom_{r_id}_{idx}"):
-                                    st.link_button("🔍 拡大表示", zoom_url, use_container_width=True, type="primary")
-                                render_fullscreen_preview(img_url, f"画像 {idx + 1}", height=300)
+                                render_image_card(img_url, f"画像 {idx + 1}", key=f"image_zoom_{r_id}_{idx}")
 
                 st.markdown("---")
                 
